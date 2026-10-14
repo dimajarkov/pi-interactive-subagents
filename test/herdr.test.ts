@@ -37,6 +37,7 @@ else process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "opaque-ch
   { mode: 0o700 },
 );
 const original = { ...process.env };
+delete process.env.HERDR_SESSION;
 process.env.HERDR_TEST_LOG = log;
 process.env.PATH = `${dir}:${process.env.PATH}`;
 process.env.HERDR_ENV = "1";
