@@ -55,18 +55,23 @@ function failure(action: string, error: any): Error {
   return new Error(`Herdr ${action} failed: ${detail}`);
 }
 
-function call(args: string[]): any {
+function herdrArgs(args: string[]): string[] {
+  const session = process.env.HERDR_SESSION;
+  return [...(session ? ["--session", session] : []), "pane", ...args];
+}
+
+function call(args: string[], outputMode: "json" | "text" = "json"): any {
   requireCaller();
   let output: string;
   try {
-    output = execFileSync("herdr", ["pane", ...args], {
+    output = execFileSync("herdr", herdrArgs(args), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (error) {
     throw failure(args[0], error);
   }
-  return decode(output, args[0]);
+  return outputMode === "text" ? output : decode(output, args[0]);
 }
 
 function verifyOwned(pane: string): void {
@@ -132,27 +137,20 @@ export function createHerdrSurface(
 
 export function herdrCommand(pane: string, command: string): void {
   verifyOwned(pane);
-  call(["run", pane, command]);
+  call(["run", pane, command], "text");
 }
 
 export function herdrEscape(pane: string): void {
   verifyOwned(pane);
-  call(["send-keys", pane, "esc"]);
+  call(["send-keys", pane, "esc"], "text");
 }
 
 export function herdrRead(pane: string, lines: number): string {
   verifyOwned(pane);
-  return readResult(
-    call(["read", pane, "--source", "recent-unwrapped", "--lines", String(Math.max(1, lines))]),
-    pane,
+  return call(
+    ["read", pane, "--source", "recent-unwrapped", "--lines", String(Math.max(1, lines))],
+    "text",
   );
-}
-
-function readResult(result: any, pane: string): string {
-  if (result.read?.pane_id !== pane || typeof result.read?.text !== "string") {
-    throw new Error(`Herdr read returned no output for owned child ${pane}.`);
-  }
-  return result.read.text;
 }
 
 export async function herdrReadAsync(pane: string, lines: number): Promise<string> {
@@ -161,13 +159,20 @@ export async function herdrReadAsync(pane: string, lines: number): Promise<strin
   try {
     ({ stdout } = await execFileAsync(
       "herdr",
-      ["pane", "read", pane, "--source", "recent-unwrapped", "--lines", String(Math.max(1, lines))],
+      herdrArgs([
+        "read",
+        pane,
+        "--source",
+        "recent-unwrapped",
+        "--lines",
+        String(Math.max(1, lines)),
+      ]),
       { encoding: "utf8" },
     ));
   } catch (error) {
     throw failure("read", error);
   }
-  return readResult(decode(stdout, "read"), pane);
+  return stdout;
 }
 
 export function herdrClose(pane: string): void {

@@ -19,8 +19,9 @@ writeFileSync(
   join(dir, "herdr"),
   `#!/usr/bin/env node
 const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(process.env.HERDR_TEST_LOG, JSON.stringify(args) + "\\n");
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--session" ? rawArgs.slice(2) : rawArgs;
+fs.appendFileSync(process.env.HERDR_TEST_LOG, JSON.stringify(rawArgs) + "\\n");
 if (process.env.HERDR_TEST_FAILURE === args[1]) {
   process.stderr.write(JSON.stringify({ error: { code: "protected_close", message: "Pane is protected; private task" } }));
   process.exit(1);
@@ -29,7 +30,8 @@ if (process.env.HERDR_TEST_MALFORMED === args[1]) {
   process.stdout.write("malformed");
   process.exit(0);
 }
-if (args[1] === "read") process.stdout.write(JSON.stringify({ result: { read: { pane_id: args[2], text: "child output\\n" } } }));
+if (args[1] === "read") process.stdout.write("child output\\n");
+else if (["run", "send-keys"].includes(args[1])) process.stdout.write("");
 else process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "opaque-child", terminal_id: process.env.HERDR_TEST_TERMINAL || "terminal-child" } } }));
 `,
   { mode: 0o700 },
@@ -183,4 +185,28 @@ test("changing Herdr session refuses an old owned handle", () => {
     delete process.env.HERDR_SESSION;
   }
   closeSurface(child);
+});
+
+test("a named caller session is explicit on every owned CLI operation", async () => {
+  process.env.HERDR_SESSION = "owned-session";
+  const before = readFileSync(log, "utf8");
+  try {
+    const child = createSurface("Named session");
+    sendCommand(child, "pi");
+    assert.equal(await readScreenAsync(child), "child output\n");
+    closeSurface(child);
+  } finally {
+    delete process.env.HERDR_SESSION;
+  }
+  const calls = readFileSync(log, "utf8")
+    .slice(before.length)
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.ok(calls.length > 0);
+  assert.ok(
+    calls.every(
+      (args) => args[0] === "--session" && args[1] === "owned-session" && args[2] === "pane",
+    ),
+  );
 });
