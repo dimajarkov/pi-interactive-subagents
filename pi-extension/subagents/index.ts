@@ -29,6 +29,8 @@ import {
   readScreen,
 } from "./cmux.ts";
 
+import { HerdrParent, type JobReceipt } from "./herdr-parent.ts";
+
 import { registerVisualObservation } from "./computer-use.ts";
 import {
   findLastAssistantMessage,
@@ -497,6 +499,7 @@ interface RunningSubagent {
   task: string;
   agent?: string;
   surface: string;
+  managed?: { client: HerdrParent; job: JobReceipt };
   startTime: number;
   sessionFile: string;
   launchScriptFile?: string;
@@ -808,6 +811,16 @@ function handleSubagentInterrupt(
   }
 
   const running = resolved.running;
+  if (running.managed) return (async () => {
+    try {
+      await running.managed!.client.interrupt(running.managed!.job.condition);
+      running.statusState = forceStatusAfterInterrupt(running.statusState, Date.now());
+      updateWidget();
+      return { content: [{ type: "text" as const, text: `Native interruption settled for subagent "${running.name}".` }], details: { id: running.id, name: running.name, status: "interrupted_verified" } };
+    } catch (error) {
+      return { content: [{ type: "text" as const, text: String(error) }], details: { id: running.id, name: running.name, error: String(error) } };
+    }
+  })();
   if (running.cli === "claude") {
     return {
       content: [{
@@ -995,9 +1008,13 @@ async function launchSubagent(
   // Use pre-created surface (parallel mode) or create a new one.
   // For new surfaces, pause briefly so the shell is ready before sending the command.
   const surfacePreCreated = !!options?.surface;
-  const surface = options?.surface ?? createSurface(params.name, targetCwdForSession);
+  const managedClient = getMuxBackend() === "herdr" ? HerdrParent.discover() : undefined;
+  if (managedClient && (surfacePreCreated || agentDefs?.cli === "claude")) throw new Error("Managed Herdr jobs require a fresh native Pi execution; no existing pane or alternative CLI fallback");
+  const managedParent = managedClient ? await managedClient.prepare() : undefined;
+  let managedJob: JobReceipt | undefined;
+  let surface = managedClient ? "pending-managed-job" : options?.surface ?? createSurface(params.name, targetCwdForSession);
   try {
-  if (!surfacePreCreated) {
+  if (!surfacePreCreated && !managedClient) {
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
 
@@ -1112,6 +1129,7 @@ async function launchSubagent(
   const parts: string[] = ["pi"];
   parts.push("--session", shellEscape(subagentSessionFile));
 
+  if (managedClient) parts.push("-e", shellEscape(join(SUBAGENTS_DIR, "herdr-control.ts")));
   const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
   parts.push("-e", shellEscape(subagentDonePath));
   if (effectiveSkills) parts.push("-e", shellEscape(join(SUBAGENTS_DIR, "initial-skills.ts")));
@@ -1174,7 +1192,7 @@ async function launchSubagent(
   envParts.push(`PI_SUBAGENT_SESSION=${shellEscape(subagentSessionFile)}`);
   envParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
   envParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`);
-  envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
+  if (!managedClient) envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
   const envPrefix = envParts.join(" ") + " ";
 
   // Pass one initial task; the child input extension applies configured skills.
@@ -1220,7 +1238,10 @@ async function launchSubagent(
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "") || "subagent"}-${id}.sh`;
   const launchScriptFile = join(artifactDir, "subagent-scripts", launchScriptName);
-  sendLongCommand(surface, command, {
+  if (managedClient) {
+    managedJob = await managedClient.launch({ name: params.name, cwd: targetCwdForSession, scriptPath: launchScriptFile, command }, managedParent);
+    surface = managedJob.condition.terminal.pane_id;
+  } else sendLongCommand(surface, command, {
     scriptPath: launchScriptFile,
     scriptPreamble: [
       `# Subagent launch script for ${params.name}`,
@@ -1236,6 +1257,7 @@ async function launchSubagent(
     task: params.task,
     agent: params.agent,
     surface,
+    ...(managedClient && managedJob ? { managed: { client: managedClient, job: managedJob } } : {}),
     startTime,
     sessionFile: subagentSessionFile,
     launchScriptFile,
@@ -1251,6 +1273,13 @@ async function launchSubagent(
   return running;
   } catch (error) {
     // Supplied surfaces were not created by this launch and are never cleaned here.
+    if (managedClient) {
+      if (managedJob) {
+        try { await managedClient.close(managedJob.condition); }
+        catch (cleanupError) { throw new Error(`${String(error)} Cleanup refused for original managed job ${surface}: ${String(cleanupError)}`); }
+      }
+      throw error;
+    }
     if (surfacePreCreated) throw error;
     return failHerdrLaunch(surface, error);
   }
@@ -1289,14 +1318,15 @@ async function watchSubagent(
   const { name, task, surface, startTime, sessionFile } = running;
   let cleanupAttempted = false;
   let cleanupError: string | undefined;
-  const cleanup = () => {
+  const cleanup = async () => {
     cleanupAttempted = true;
-    try { closeSurface(surface); }
+    try { if (running.managed) await running.managed.client.close(running.managed.job.condition); else closeSurface(surface); }
     catch (error: any) { cleanupError = error?.message ?? String(error); }
   };
 
   try {
-    const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
+    const watchSignal = AbortSignal.any([signal, getModuleAbortSignal()]);
+    const result = running.managed ? await running.managed.client.poll(running.managed.job.condition, sessionFile, watchSignal, () => observeRunningSubagent(running)) : await pollForExit(surface, watchSignal, {
       interval: 1000,
       sessionFile,
       sentinelFile: running.sentinelFile,
@@ -1337,7 +1367,7 @@ async function watchSubagent(
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
 
-      cleanup();
+      await cleanup();
       runningSubagents.delete(running.id);
       if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
       return { name, task, summary, exitCode: cleanupError ? 1 : result.exitCode, elapsed,
@@ -1364,7 +1394,7 @@ async function watchSubagent(
           : "Sub-agent exited without output";
     }
 
-    cleanup();
+    await cleanup();
     runningSubagents.delete(running.id);
     if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
 
@@ -1380,7 +1410,7 @@ async function watchSubagent(
       ...(cleanupError ? { cleanupError } : {}),
     };
   } catch (err: any) {
-    if (!cleanupAttempted) cleanup();
+    if (!cleanupAttempted) await cleanup();
     const cleanupDetail = cleanupError ? ` Cleanup failed for owned child ${surface}: ${cleanupError}` : "";
     runningSubagents.delete(running.id);
 
@@ -1844,14 +1874,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Record entry count before resuming so we can extract new messages
         const entryCountBefore = getNewEntries(params.sessionPath, 0).length;
 
-        const surface = createSurface(name, ctx.cwd);
+        const managedClient = getMuxBackend() === "herdr" ? HerdrParent.discover() : undefined;
+        const managedParent = managedClient ? await managedClient.prepare() : undefined;
+        let managedJob: JobReceipt | undefined;
+        let surface = managedClient ? "pending-managed-job" : createSurface(name, ctx.cwd);
         try {
-        await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
+        if (!managedClient) await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
         // Build pi resume command
         const parts = ["pi", "--session", shellEscape(params.sessionPath)];
 
         // Load subagent-done extension so the agent can self-terminate if needed
+        if (managedClient) parts.push("-e", shellEscape(join(SUBAGENTS_DIR, "herdr-control.ts")));
         const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
         parts.push("-e", shellEscape(subagentDonePath));
 
@@ -1903,7 +1937,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             .replace(/-+/g, "-")
             .replace(/^-|-$/g, "") || "resume"}-resume-${Date.now()}.sh`,
         );
-        sendLongCommand(surface, command, {
+        if (managedClient) {
+          managedJob = await managedClient.launch({ name, cwd: ctx.cwd, scriptPath: launchScriptFile, command }, managedParent);
+          surface = managedJob.condition.terminal.pane_id;
+        } else sendLongCommand(surface, command, {
           scriptPath: launchScriptFile,
           scriptPreamble: [
             `# Subagent resume script for ${name}`,
@@ -1920,6 +1957,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           name,
           task: params.message ?? "resumed session",
           surface,
+          ...(managedClient && managedJob ? { managed: { client: managedClient, job: managedJob } } : {}),
           startTime,
           sessionFile: params.sessionPath,
           launchScriptFile,
@@ -2016,6 +2054,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           },
         };
         } catch (error) {
+          if (managedClient) {
+            if (managedJob) {
+              try { await managedClient.close(managedJob.condition); }
+              catch (cleanupError) { throw new Error(`${String(error)} Cleanup refused for original managed job ${surface}: ${String(cleanupError)}`); }
+            }
+            throw error;
+          }
           return failHerdrLaunch(surface, error);
         }
       },

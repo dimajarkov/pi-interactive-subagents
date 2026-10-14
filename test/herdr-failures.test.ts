@@ -1,6 +1,7 @@
+import net from "node:net";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSurface, sendCommand, sendEscape, readScreenAsync, closeSurface } from "../pi-extension/subagents/cmux.ts";
@@ -23,14 +24,32 @@ let a = process.argv.slice(2); if (a[0] === "--session") a = a.slice(2);
 fs.appendFileSync(process.env.FAILURE_LOG, JSON.stringify(a) + "\\n");
 const p = process.env.FAILURE_STATE; const s = JSON.parse(fs.readFileSync(p));
 if ([s.fail].flat().includes(a[1]) && (!s.failPane || s.failPane === a[2])) { if (s.lateSidecar) fs.writeFileSync(s.lateSidecar,JSON.stringify({type:"done"})); process.stderr.write(JSON.stringify({error:{code:a[1] === "close" ? "protected_close" : "pane_not_found"}})); process.exit(1); }
-if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:!!s.zoomed}}}));
+if (a[0] === "status") console.log(JSON.stringify({running:true,session:"fixture",socket:process.env.FAILURE_SOCKET}));
+else if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:!!s.zoomed}}}));
 else if (a[1] === "split") { s.sequence++; fs.writeFileSync(p,JSON.stringify(s)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+s.sequence,terminal_id:"terminal-"+s.sequence,workspace_id:"workspace",tab_id:"tab"}}})); }
 else if (a[1] === "get") console.log(JSON.stringify({result:{pane:{pane_id:a[2],terminal_id:"terminal-"+a[2].split("-")[1],workspace_id:s.moved ? "foreign-workspace" : "workspace",tab_id:"tab"}}}));
 else if (["rename","close"].includes(a[1])) console.log(JSON.stringify({result:{}}));
 else if (a[1] === "read") console.log("synthetic active child");
 `, { mode: 0o700 });
+  const socketPath=join(dir,"api.sock");
+  const condition=(pane:string)=>({pane_id:pane,tab_id:"tab",terminal_id:pane==='parent'?'parent-terminal':"terminal-"+pane.split('-')[1],launch_id:"launch-"+pane});
+  const server=net.createServer(socket=>{let buffer="";socket.on("data",chunk=>{buffer+=chunk;while(buffer.includes("\n")){const end=buffer.indexOf("\n");const request=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);const p=request.params;const s=JSON.parse(readFileSync(state,"utf8"));const op=request.method.split('.').at(-1);const pane=p.condition?.terminal?.pane_id;writeFileSync(log,(existsSync(log)?readFileSync(log,"utf8"):"")+JSON.stringify([request.method,op,pane,p.label])+"\n");let result:any;
+   const error=(code:string,message:string)=>socket.end(JSON.stringify({id:request.id,error:{code,message}})+"\n");
+   if(request.method==='terminal.job.capabilities')result={type:'managed_terminal_capabilities',job_ownership:true,cooperative_control:true,version:1,max_frame_bytes:16384,required_sdk_features:['input_request_lifecycle_v1','message_admission_v1','external_request_correlation_v1']};
+   else if(request.method==='terminal.condition')result={type:'terminal_condition',condition:condition('parent')};
+   else if(request.method==='terminal.job.launch'){
+    if([s.fail].flat().includes('run')){error('pane_launch_failed','Herdr direct launch failed');continue;}
+    assert.ok(existsSync(p.argv[1]),'complete launch artifact exists before allocation');assert.deepEqual(p.argv.slice(0,1),['/bin/bash']);assert.match(readFileSync(p.argv[1],'utf8'),/HERDR_PANE_ID/);s.sequence++;writeFileSync(state,JSON.stringify(s));const child='child-'+s.sequence;result={type:'managed_terminal',condition:{terminal:condition(child),job_id:'job-'+child},phase:'owned',agent:null,exit:null};
+   }else if(request.method==='terminal.job.get'){
+    if([s.fail].flat().includes('read')&&(!s.failPane||s.failPane===pane)){if(s.lateSidecar)writeFileSync(s.lateSidecar,JSON.stringify({type:'done'}));error('pane_not_found','original job unavailable');continue;}
+    result={type:'managed_terminal',condition:p.condition,phase:s.moved?'moved':'owned',agent:null,exit:null};
+   }else if(request.method==='terminal.job.close'){
+    if([s.fail].flat().includes('close')){error('protected_close','owned job protected');continue;}result={type:'managed_terminal',condition:p.condition,phase:'exited',agent:null,exit:{code:0,reason:'closed'}};
+   }else {error('unknown_method','unsupported');continue;}
+   socket.end(JSON.stringify({id:request.id,result})+"\n");
+  }});});await new Promise<void>(resolve=>server.listen(socketPath,resolve));
   process.env.PATH = `${dir}:${original.PATH}`;
-  Object.assign(process.env, { FAILURE_LOG: log, FAILURE_STATE: state, HERDR_ENV: "1", HERDR_SESSION: "fixture", HERDR_PANE_ID: "parent", HERDR_WORKSPACE_ID: "workspace", HERDR_TAB_ID: "tab", PI_SUBAGENT_MUX: "herdr", PI_SUBAGENT_SHELL_READY_DELAY_MS: "0", PI_CODING_AGENT_DIR: join(dir, "config") });
+  Object.assign(process.env, { FAILURE_LOG: log, FAILURE_STATE: state, FAILURE_SOCKET:socketPath, HERDR_ENV: "1", HERDR_SESSION: "fixture", HERDR_PANE_ID: "parent", HERDR_WORKSPACE_ID: "workspace", HERDR_TAB_ID: "tab", PI_SUBAGENT_MUX: "herdr", PI_SUBAGENT_SHELL_READY_DELAY_MS: "0", PI_CODING_AGENT_DIR: join(dir, "config") });
   delete process.env.PI_DENY_TOOLS;
   delete process.env.PI_SUBAGENT_NAME;
   mkdirSync(join(dir, "config"), { recursive: true });
@@ -45,6 +64,7 @@ else if (a[1] === "read") console.log("synthetic active child");
   } finally {
     for (const fn of events.get("session_shutdown") ?? []) await fn({}, ctx);
     await new Promise(r => setTimeout(r, 100));
+    await new Promise<void>(resolve=>server.close(()=>resolve()));
     process.env = original;
     rmSync(dir, {recursive:true,force:true});
   }
@@ -59,17 +79,17 @@ const spawn = (h: any) => h.tools.get("subagent").execute("call", {name:"Failure
 test("a missing Herdr pane produces a parent lifecycle failure without an exit sidecar", async () => fixture(async h => {
   await spawn(h);
   const m = await result(h);
-  assert.match(m.content, /Herdr read failed.*pane_not_found/);
+  assert.match(m.content, /Herdr terminal.job.get.*pane_not_found/);
   assert.equal(m.details.exitCode,1);
 }));
 
 
-test("a read failure also reports protected cleanup rejection without retrying another pane", async () => fixture(async h => {
+test("a missing job status retains cleanup uncertainty without retrying another pane", async () => fixture(async h => {
   h.configure({fail:["read","close"]});
   await spawn(h);
   const m = await result(h);
-  assert.match(m.content, /Herdr read failed.*pane_not_found/);
-  assert.match(m.content, /cleanup.*protected_close/i);
+  assert.match(m.content, /Herdr terminal.job.get.*pane_not_found/);
+  assert.match(m.content, /cleanup.*pane_not_found/i);
   assert.ok(h.calls().filter((a: string[]) => a[1] === "close").every((a: string[]) => a[2] === "child-1"));
 }));
 
@@ -85,20 +105,20 @@ test("completed child summary survives protected cleanup rejection and no close 
   assert.equal(h.calls().filter((a: string[]) => a[1] === "close").length,1);
 }));
 
-test("run failure after split closes only its launch-owned child and preserves protected cleanup diagnostic", async () => fixture(async h => {
+test("direct launch rejection allocates no child and never guesses a cleanup target", async () => fixture(async h => {
   h.configure({fail:["run","close"]});
-  await assert.rejects(() => spawn(h), /Herdr run failed.*Cleanup failed.*protected_close/s);
+  await assert.rejects(() => spawn(h), /Herdr terminal.job.launch.*pane_launch_failed/s);
   const closes = h.calls().filter((a: string[]) => a[1] === "close");
-  assert.deepEqual(closes.map((a: string[]) => a[2]),["child-1"]);
+  assert.deepEqual(closes,[]);
   assert.ok(!h.calls().some((a: string[]) => ["focus","zoom","move"].includes(a[1])));
 }));
 
-test("resume launch failure closes only the new child rather than the original session pane", async () => fixture(async h => {
+test("resume direct launch rejection never closes the original session pane", async () => fixture(async h => {
   h.configure({fail:"run"});
   const sessionPath = join(h.dir,"resume.jsonl");
   writeFileSync(sessionPath, JSON.stringify({type:"session",id:"resume",version:3}) + "\n");
-  await assert.rejects(() => h.tools.get("subagent_resume").execute("resume",{sessionPath,name:"ResumeFailure"},undefined,undefined,h.ctx),/Herdr run failed/);
-  assert.deepEqual(h.calls().filter((a: string[]) => a[1] === "close").map((a: string[]) => a[2]),["child-1"]);
+  await assert.rejects(() => h.tools.get("subagent_resume").execute("resume",{sessionPath,name:"ResumeFailure"},undefined,undefined,h.ctx),/Herdr terminal.job.launch/);
+  assert.deepEqual(h.calls().filter((a: string[]) => a[1] === "close"),[]);
 }));
 
 
@@ -123,7 +143,8 @@ test("a sidecar arriving during terminal read failure wins over the read error",
   h.configure({fail:"read",lateSidecar:started.details.sessionFile + ".exit"});
   const m = await result(h);
   assert.match(m.content,/LATE_RESULT_42/);
-  assert.equal(m.details.exitCode,0);
+  assert.equal(m.details.exitCode,1);
+  assert.match(m.content,/cleanup.*pane_not_found/i);
 }));
 
 test("parallel child failure and completion keep independent ownership and result notifications", async () => fixture(async h => {
@@ -137,9 +158,9 @@ test("parallel child failure and completion keep independent ownership and resul
   while (h.messages.filter((m: any) => m.customType === "subagent_result").length < 2 && Date.now() < end) await new Promise(r=>setTimeout(r,25));
   const messages=h.messages.filter((m: any) => m.customType === "subagent_result");
   assert.equal(messages.length,2);
-  assert.ok(messages.some((m: any) => /Herdr read failed/.test(m.content)));
+  assert.ok(messages.some((m: any) => /Herdr terminal.job.get/.test(m.content)));
   assert.ok(messages.some((m: any) => /SECOND_CHILD_RESULT_42/.test(m.content)));
-  assert.deepEqual(h.calls().filter((a: string[])=>a[1]==="close").map((a: string[])=>a[2]).sort(),["child-1","child-2"]);
+  assert.deepEqual(h.calls().filter((a: string[])=>a[1]==="close").map((a: string[])=>a[2]).sort(),["child-2"]);
 }));
 
 
@@ -180,9 +201,23 @@ test("all five specialist launches pass their exact medium model to Pi without m
     assert.match(script, new RegExp(`--model 'openai-codex/${role === "planner" ? "gpt-6-astra" : "gpt-6\\.1-sol"}:medium'`));
     assert.ok(!script.includes("exec claude"));
     if (role === "worker") assert.match(script, /--tools '[^']*\btodo\b/);
-    assert.ok(h.calls().some((a: string[]) => a[1] === "rename" && a[3] === `${phase}: ${role}`));
+    assert.match(script,/herdr-control\.ts.*subagent-done\.ts/);
     writeFileSync(r.details.sessionFile + ".exit",JSON.stringify({type:"done"}));
   }
   assert.deepEqual(h.ctx.model,{provider:"openai-codex",id:"gpt-6.1-sol",thinking:"xhigh"});
   assert.ok(h.calls().filter((a: string[]) => a[1] === "rename").every((a: string[]) => a[2].startsWith("child-")));
+}));
+
+test("same-session resume does not consume a previous managed child completion", async () => fixture(async h => {
+  h.configure({fail:null});
+  const first=await spawn(h);
+  writeFileSync(first.details.sessionFile,JSON.stringify({type:'session',id:'native-original',version:3})+'\n'+JSON.stringify({type:'message',message:{role:'assistant',content:[{type:'text',text:'FIRST_COMPLETION'}]}})+'\n');
+  writeFileSync(first.details.sessionFile+'.exit',JSON.stringify({type:'done'}));
+  await result(h);h.messages.splice(0);
+  await h.tools.get('subagent_resume').execute('resume',{sessionPath:first.details.sessionFile,name:'ResumedChild',message:'Continue synthetic work'},undefined,undefined,h.ctx);
+  await new Promise(r=>setTimeout(r,1200));
+  assert.equal(h.messages.filter((m:any)=>m.customType==='subagent_result').length,0,'old completion must not terminate the resumed job');
+  writeFileSync(first.details.sessionFile,readFileSync(first.details.sessionFile,'utf8')+JSON.stringify({type:'message',message:{role:'assistant',content:[{type:'text',text:'SECOND_COMPLETION'}]}})+'\n');
+  writeFileSync(first.details.sessionFile+'.exit',JSON.stringify({type:'done'}));
+  const second=await result(h);assert.match(second.content,/SECOND_COMPLETION/);assert.equal(second.details.exitCode,0);
 }));

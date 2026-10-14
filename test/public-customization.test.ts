@@ -1,3 +1,4 @@
+import net from "node:net";
 /** Public extension registration, discovery and native TUI component contracts.
  * The host API is a boundary fixture; these tests do not prove physical keys or pixels.
  */
@@ -124,12 +125,23 @@ test("public background launches expose parent states and notify autonomous stal
 const fs = require("node:fs");
 let a = process.argv.slice(2); if (a[0] === "--session") a = a.slice(2);
 const seq = process.env.TEST_SPLIT_COUNTER;
-if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:false}}}));
+if (a[0] === "status") console.log(JSON.stringify({running:true,session:"synthetic",socket:process.env.TEST_MANAGED_SOCKET}));
+else if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:false}}}));
 else if (a[1] === "split") { const id = Number(fs.existsSync(seq) ? fs.readFileSync(seq,"utf8") : 0) + 1; fs.writeFileSync(seq, String(id)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+id, terminal_id:"terminal-"+id,workspace_id:"synthetic-workspace",tab_id:"synthetic-tab"}}})); }
 else if (a[1] === "get") console.log(JSON.stringify({result:{pane:{pane_id:a[2], terminal_id:"terminal-"+a[2].split("-")[1],workspace_id:"synthetic-workspace",tab_id:"synthetic-tab"}}}));
 else if (a[1] === "rename") console.log(JSON.stringify({result:{}}));
 else if (a[1] === "read") console.log("synthetic ongoing task");
 `, { mode: 0o700 });
+  const managedSocket=join(dir,"managed.sock");let managedSequence=0;
+  const server=net.createServer(socket=>{let buffer="";socket.on("data",chunk=>{buffer+=chunk;while(buffer.includes("\n")){const end=buffer.indexOf("\n"),request=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);let result:any;
+   if(request.method==='terminal.job.capabilities')result={type:'managed_terminal_capabilities',job_ownership:true,cooperative_control:true,version:1,max_frame_bytes:16384,required_sdk_features:['input_request_lifecycle_v1','message_admission_v1','external_request_correlation_v1']};
+   if(request.method==='terminal.condition')result={type:'terminal_condition',condition:{pane_id:'synthetic-parent',tab_id:'synthetic-tab',terminal_id:'parent-terminal',launch_id:'parent-launch'}};
+   if(request.method==='terminal.job.launch'){managedSequence++;result={type:'managed_terminal',condition:{terminal:{pane_id:'child-'+managedSequence,tab_id:'synthetic-tab',terminal_id:'terminal-'+managedSequence,launch_id:'launch-'+managedSequence},job_id:'job-'+managedSequence},phase:'owned',agent:null,exit:null};}
+   if(request.method==='terminal.job.get')result={type:'managed_terminal',condition:request.params.condition,phase:'owned',agent:null,exit:null};
+   if(request.method==='terminal.job.close')result={type:'managed_terminal',condition:request.params.condition,phase:'exited',agent:null,exit:{code:0,reason:'closed'}};
+   socket.end(JSON.stringify({id:request.id,result})+'\n');
+  }});});await new Promise<void>(resolve=>server.listen(managedSocket,resolve));
+  process.env.TEST_MANAGED_SOCKET=managedSocket;
   process.env.PATH = `${dir}:${process.env.PATH}`;
   process.env.TEST_SPLIT_COUNTER = join(dir, "split-counter");
   process.env.HERDR_ENV = "1";
@@ -189,7 +201,7 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
     assert.match(widget(null, theme).render(120).join("\n"), /waiting/);
     assert.ok(delivered.filter(d => d.message.customType === "subagent_status").every(d => !d.message.content.includes("Interactive")));
     assert.equal(interactive.details.status, "started");
-  } finally { emit("session_shutdown"); Date.now = now; }
+  } finally { emit("session_shutdown"); Date.now = now; await sleep(100); await new Promise<void>(resolve=>server.close(()=>resolve())); }
 }));
 
 
