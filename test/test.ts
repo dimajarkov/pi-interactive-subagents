@@ -1228,6 +1228,11 @@ describe("subagent-done.ts", () => {
   });
 
   describe("shouldAutoExitOnAgentEnd", () => {
+    it("leaves the conversation alive when native Pi reports Escape as an operation-aborted error", () => {
+      const messages = [{ role: "assistant", stopReason: "error", errorMessage: "This operation was aborted" }];
+      assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
+    });
+
     it("auto-exits after normal completion when there was no takeover", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
