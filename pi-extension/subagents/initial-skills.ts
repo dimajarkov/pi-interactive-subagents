@@ -25,10 +25,20 @@ export default function initialSkills(pi: ExtensionAPI) {
       return { action: "transform", text: [...blocks, event.text].join("\n\n"), images: event.images };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(errorMessage, "error");
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
-      if (sessionFile) writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "error", errorMessage, stopReason: "error" }));
-      ctx.shutdown();
+      try {
+        ctx.ui.notify(errorMessage, "error");
+        const sessionFile = process.env.PI_SUBAGENT_SESSION;
+        if (sessionFile) {
+          try {
+            writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "error", errorMessage, stopReason: "error" }));
+          } catch (deliveryError) {
+            ctx.ui.notify(`Could not deliver skill error to parent: ${deliveryError instanceof Error ? deliveryError.message : String(deliveryError)}`, "error");
+          }
+        }
+      } finally {
+        // Sidecar delivery is best effort; a failed initial task must still terminate.
+        ctx.shutdown();
+      }
       return { action: "handled" };
     }
   });

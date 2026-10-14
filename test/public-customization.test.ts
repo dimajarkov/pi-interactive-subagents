@@ -232,3 +232,22 @@ test("missing configured skill stops initial execution with an actionable error"
   assert.deepEqual(result, { action: "handled" });
   assert.match(notices[0], /Configured subagent skill not found: missing/);
 }));
+
+
+test("initial skill failure shuts down even when the parent error sidecar cannot be written", async () => isolated(async dir => {
+  process.env.PI_SUBAGENT_SKILLS = "missing";
+  process.env.PI_SUBAGENT_SESSION = join(dir, "failed.jsonl");
+  // A directory at the sidecar path forces a real, portable filesystem write failure.
+  mkdirSync(process.env.PI_SUBAGENT_SESSION + ".exit");
+  let shutdown = false;
+  const { default: skillsExtension } = await import("../pi-extension/subagents/initial-skills.ts");
+  const h = host();
+  h.api.getCommands = () => [];
+  skillsExtension(h.api);
+  const notices: string[] = [];
+  const result = await h.events.get("input")![0]({ text: "Do not execute without skill." }, { shutdown() { shutdown = true; }, ui: { notify: (text: string) => notices.push(text) } });
+  assert.equal(shutdown, true);
+  assert.deepEqual(result, { action: "handled" });
+  assert.match(notices[0], /Configured subagent skill not found: missing/);
+  assert.match(notices[1], /Could not deliver skill error to parent/);
+}));
