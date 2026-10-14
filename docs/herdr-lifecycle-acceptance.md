@@ -23,7 +23,7 @@ The real model-backed scenarios cover:
 - `subagent_resume` continues the same native conversation with parent guidance, preserves an interactive `autoExit: false` pane after a normal turn, and accepts subsequent synthetic user input calling `subagent_done`.
 - A second resume of that same native conversation uses `autoExit: true` and returns its new summary without explicit completion.
 - Public `subagent_interrupt` stops an active native bash turn, preserves the child pane and conversation, and emits no completion solely because of interruption.
-- Subsequent synthetic input in that same child completes normally and returns its summary through upstream asynchronous delivery.
+- Subsequent synthetic human input disables autonomous auto-exit, keeps the same pane and native conversation open across two completed turns, and explicit `subagent_done` returns the summary through asynchronous delivery.
 - Bash launch scripts longer than a terminal row remain inspectable through public tool results, and the configured shell readiness delay is honored on the native launch path.
 
 The failure scenario uses a documented `registerProvider` streaming fixture only inside the isolated `FailureProof` process.
@@ -39,13 +39,25 @@ The fork recognizes this exact current-runtime abort representation in `shouldAu
 A deterministic regression was red before the minimal correction and green afterward.
 Other error messages still trigger the upstream error completion path.
 
-## Outstanding acceptance boundary
+## Intentional human-takeover adaptation
 
-Pinned upstream `shouldAutoExitOnAgentEnd` deliberately ignores the user-takeover marker and auto-exits after a normal user-initiated follow-up turn.
-Ticket #38 instead says human input disables autonomous auto-exit “as upstream specifies.”
-The source and the ticket disagree.
-The tests preserve and identify the observed upstream behavior until the user decides whether to change the behavior or correct that criterion.
-This criterion is pending and ticket #38 must not be reported fully accepted on the basis of these tests.
+Dmitri explicitly chose ticket #38's behavior on 2026-10-14: human input disables autonomous auto-exit.
+This intentionally differs from the pinned upstream helper, which ignores and resets its user-takeover marker.
+The initial injected autonomous task is still excluded from takeover.
+Once later input takes over a child, the marker persists for that process across subsequent turns, and completion requires `subagent_done` or `caller_ping`.
+A fresh resumed child continues to honor its requested `autoExit` setting.
+The isolated native interruption/follow-up scenario failed before this adaptation because the first human follow-up automatically delivered a result and closed the pane.
+It now checks two normal human turns in the same pane before explicit completion.
+
+## Validation of the adaptation
+
+All 138 deterministic tests pass with inherited `HERDR_SESSION=handovers`.
+The focused real Pi takeover scenario passes: public interruption, two completed human-input turns in the identical pane/conversation with no premature result, explicit `subagent_done`, one asynchronous parent result, and owned-child closure.
+The native harness also verifies unchanged authentication content, preserved workspace focus, and all preexisting workspaces retained.
+A broader rerun passed takeover and native synthetic-provider failure, but its help/resume case timed out after the model returned a text summary instead of invoking the requested completion tool.
+That rerun is not claimed as a fully passing suite.
+The synthetic fixture now explicitly says prior wait/no-tool instructions applied to previous turns and requires the actual completion tool.
+The prior help/resume acceptance remains the independently recorded native proof at integration `a45045e7fce01d4ae098d6f42aa4f00f4924b262`; it was not repeated successfully in this adaptation run.
 
 Synthetic CLI input proves native session and tool behavior, not physical-key parity or rendered native-client visual acceptance.
 Replacement-occupant ownership safety, full backend parity, customization, active deployment, and Computer Use terminal automation are outside this slice.

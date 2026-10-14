@@ -14,17 +14,14 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
 }
 
 export function shouldAutoExitOnAgentEnd(
-  _userTookOver: boolean,
+  userTookOver: boolean,
   messages: any[] | undefined,
 ): boolean {
-  // Manual input should not strand an auto-exit subagent. If the latest agent
-  // turn completed normally, close the session. Escape/abort still leaves it
-  // open for inspection or another prompt.
-  //
-  // stopReason: "error" (e.g. exhausted retries on a provider overload) also
-  // returns true — we want to shut down so the parent is woken up — but we
-  // pair this with findLatestAssistantError() so the parent learns it was an
-  // error, not a clean completion.
+  // Human takeover keeps the native conversation available until explicit
+  // subagent_done or caller_ping, including across subsequent turns.
+  if (userTookOver) return false;
+
+  // Untouched autonomous workers still report fatal errors to the parent.
   if (messages) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
@@ -208,11 +205,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     recorder.agentEndWaiting();
-    if (autoExit) {
-      // Reset any recorded manual input marker. Auto-exit is decided by whether
-      // the latest agent turn completed normally, not by who initiated it.
-      userTookOver = false;
-    }
   });
 
   pi.on("turn_start", (event) => {
