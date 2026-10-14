@@ -29,6 +29,7 @@ import {
   readScreen,
 } from "./cmux.ts";
 
+import { registerVisualObservation } from "./computer-use.ts";
 import {
   findLastAssistantMessage,
   getNewEntries,
@@ -1358,6 +1359,7 @@ async function watchSubagent(
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+  registerVisualObservation(pi);
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;

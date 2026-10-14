@@ -57,3 +57,25 @@ Rendered layout, keyboard focus within a native client, interactive takeover, co
 A matching terminal ID identifies a terminal, not its current occupant.
 Same-terminal replacement occupants, atomic targeting races, moved panes, and transport changes not represented in the bound environment require the subsequent ownership/lifecycle ticket and its acceptance evidence.
 The initial candidate must not be deployed or described as complete safety or end-user parity proof.
+
+## Visual route candidate (#41)
+
+The visual-tester definition now selects native Pi `openai-codex/gpt-6.1-sol` at medium thinking and replaces CDP instructions with the explicit `codex_computer_use` coordination tool.
+`pi-extension/subagents/computer-use.ts` provides a one-shot owner-private request/result queue serviced by the explicitly active existing Codex app agent.
+The existing agent uses its own normal Computer Use tool and app-access permission flow; the queue never launches a backend, forwards executable tool code, or generates approval responses.
+The result returns to the original waiting Pi call as text provenance and, optionally, native screenshot image content.
+Upstream Pi session and parent completion mechanisms remain authoritative.
+
+An app host creates a mode-0700 queue directory and calls `openVisualHost` with exact task, native Pi session ID, canonical checkout, `visual-tester` role, synthetic target, existing Codex thread ID, and a lease lasting at most five minutes.
+It supplies that directory through `PI_CODEX_VISUAL_HOST` in the isolated visual child environment.
+The tool is absent unless that explicit capability is present, private, current, checkout-matched, and visual-role-matched; execution additionally checks the actual Pi session ID.
+The host reads `readVisualRequest`, validates target/browser ownership using the browser-routing owner, makes the native Computer Use observation in its active turn, then calls `completeVisualRequest` with observed, denied, or cancelled findings.
+A screenshot must be an owner-private PNG basename inside the queue directory and at most ten MiB.
+Each observation requires a fresh queue/lease.
+Missing, stale, replaced, foreign, cancelled, malformed, nonprivate, or oversized bindings/results fail closed.
+A disappeared host produces bounded expiry failure rather than fallback automation.
+
+The lease is explicit coordination authority, not an attestation of active native app permission or cryptographic protection against another process running as the same OS user.
+Source and deterministic queue tests alone do not establish an approved or verified Computer Use bridge.
+Acceptance still requires one actual native Pi visual-tester request serviced by the current Codex app's normal Computer Use harness, retained native tool/session provenance and actual evidence, and upstream parent findings delivery.
+No active Pi installation or configuration is changed by this candidate.
