@@ -77,10 +77,10 @@ A disappeared host produces bounded expiry failure rather than fallback automati
 
 The lease is explicit coordination authority, not an attestation of active native app permission or cryptographic protection against another process running as the same OS user.
 Source and deterministic queue tests alone do not establish an approved or verified Computer Use bridge.
-Acceptance still requires one actual native Pi visual-tester request serviced by the current Codex app's normal Computer Use harness, retained native tool/session provenance and actual evidence, and upstream parent findings delivery.
+The bounded native-app proof below verifies one such request, actual screenshot delivery to the same Pi child, and independent upstream parent findings delivery. Browser acceptance remains separate and incomplete.
 No active Pi installation or configuration is changed by this candidate.
 
-### Additional native route investigation
+### Earlier native route investigation (historical)
 
 A later local proof attempt opened a fabricated task-owned TextEdit RTF document using the normal native application launch path.
 No Computer Use observation or screenshot was performed, so fixture launch is not visual evidence.
@@ -98,3 +98,27 @@ The separate supported Chrome QA route verified the fresh disposable profile and
 The diagnostic reported one permitted page and no foreign targets.
 No raw CDP or native interaction bypass was attempted, and the rejected owned profile/process and private evidence were retained.
 This Chrome-specific containment prerequisite remains unaccepted independently of the proposed native-app route.
+
+
+### Native TextEdit observation and parent delivery verified
+
+A fresh synthetic proof on 2026-10-14 ran the visual-tester as a native Pi child with `openai-codex/gpt-6.1-sol` and `medium` thinking, verified from its native JSONL model/thinking records.
+The child invoked `codex_computer_use` once. The explicitly active existing root Codex app thread serviced that request through its own normal `mcp__cua_repl.js` native TextEdit AX/screenshot APIs.
+The observed document displayed the blue heading `Pi Native Visual Proof 41`, a green independently generated verification token, and readable synthetic text without visible overlap.
+The child received actual text provenance plus a PNG image content block matching the privately retained screenshot bytes.
+Native host screenshot bytes were encoded from JPEG to PNG for the queue format; there was no alternate screenshot capture route.
+
+The binding matched the actual child session header, canonical checkout, visual role, exact task-owned TextEdit document, root host thread, nonce and bounded expiry.
+The child model had no shell or alternate GUI tool. It completed normally and the existing `subagent-done` extension applied auto-exit; no explicit `subagent_done` tool call occurred.
+The parent's native JSONL contains an independent `subagent_result` with exit code zero and the actual observed findings, request/session/host provenance, and private evidence reference.
+The parent then wrote the delivered summary and returned its completion marker.
+Only the task-owned child pane closed; the parent remained open, focus stayed on the preexisting workspace, and all 45 preexisting workspace IDs were preserved.
+
+The initial child launch paused at project trust because its multiplexer shell did not inherit the private parent PATH wrapper.
+The verified child menu was answered `Do not trust (this session only)`, retaining the reviewed isolated global extension while granting no persistent or parent-folder trust.
+That fixture correction enabled the request; it does not change active Pi deployment or general trust settings.
+
+Private evidence includes the native child/parent JSONL, task-owned screenshot, delivered-summary file and before/after workspace record. No private transcripts, screenshot bytes, account data or personal browser state are committed.
+This verifies ticket #41 criteria 1, 3 and 6 for the bounded native TextEdit slice, alongside the already source-verified instruction replacement.
+It does not verify Chrome application QA/profile target readiness, web interaction, requested Zen behavior, automated terminal UI acceptance, unattended host availability, or full release readiness.
+The earlier Chrome guard target refusal remains honored and ticket #41 remains incomplete as a whole.
