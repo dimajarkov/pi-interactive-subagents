@@ -1950,7 +1950,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   ? `Resumed session exited with code ${result.exitCode}`
                   : "Resumed session exited without new output");
             const presentation = resolveResultPresentation(
-              { ...result, summary, sessionFile: params.sessionPath },
+              { ...result, summary: result.cleanupError
+                ? `${summary}\n\nCleanup failed for resumed child ${surface}: ${result.cleanupError}`
+                : summary, sessionFile: params.sessionPath },
               name,
             );
 
@@ -1966,6 +1968,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },

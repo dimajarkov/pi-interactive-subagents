@@ -99,6 +99,13 @@ export function createHerdrSurface(
   }
   if (fromSurface && fromSurface !== process.env.HERDR_PANE_ID) verifyOwned(fromSurface);
   const target = fromSurface ? ["--pane", fromSurface] : ["--current"];
+  const layout = call(["layout", ...target]).layout;
+  if (typeof layout?.zoomed !== "boolean") {
+    throw new Error("Herdr layout returned no safe zoom state; inspect the caller layout before retrying. No pane was created.");
+  }
+  if (layout.zoomed) {
+    throw new Error("Herdr caller layout is zoomed; unzoom it manually before launching a background child. No layout was changed.");
+  }
   const pane = call([
     "split",
     ...target,

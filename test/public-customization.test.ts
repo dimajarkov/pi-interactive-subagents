@@ -124,7 +124,8 @@ test("public background launches expose parent states and notify autonomous stal
 const fs = require("node:fs");
 let a = process.argv.slice(2); if (a[0] === "--session") a = a.slice(2);
 const seq = process.env.TEST_SPLIT_COUNTER;
-if (a[1] === "split") { const id = Number(fs.existsSync(seq) ? fs.readFileSync(seq,"utf8") : 0) + 1; fs.writeFileSync(seq, String(id)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+id, terminal_id:"terminal-"+id,workspace_id:"synthetic-workspace",tab_id:"synthetic-tab"}}})); }
+if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:false}}}));
+else if (a[1] === "split") { const id = Number(fs.existsSync(seq) ? fs.readFileSync(seq,"utf8") : 0) + 1; fs.writeFileSync(seq, String(id)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+id, terminal_id:"terminal-"+id,workspace_id:"synthetic-workspace",tab_id:"synthetic-tab"}}})); }
 else if (a[1] === "get") console.log(JSON.stringify({result:{pane:{pane_id:a[2], terminal_id:"terminal-"+a[2].split("-")[1],workspace_id:"synthetic-workspace",tab_id:"synthetic-tab"}}}));
 else if (a[1] === "rename") console.log(JSON.stringify({result:{}}));
 else if (a[1] === "read") console.log("synthetic ongoing task");

@@ -30,7 +30,8 @@ if (process.env.HERDR_TEST_MALFORMED === args[1]) {
   process.stdout.write("malformed");
   process.exit(0);
 }
-if (args[1] === "read") process.stdout.write("child output\\n");
+if (args[1] === "layout") process.stdout.write(JSON.stringify({result:{layout:{zoomed:false}}}));
+else if (args[1] === "read") process.stdout.write("child output\\n");
 else if (["run", "send-keys"].includes(args[1])) process.stdout.write("");
 else process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "opaque-child", terminal_id: process.env.HERDR_TEST_TERMINAL || "terminal-child", workspace_id: "opaque-workspace", tab_id: "opaque-tab" } } }));
 `,
@@ -173,8 +174,7 @@ test("malformed creation never guesses a child target", () => {
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  assert.equal(newCalls.length, 1);
-  assert.equal(newCalls[0][1], "split");
+  assert.deepEqual(newCalls.map((args) => args[1]), ["layout", "split"]);
 });
 
 test("changing Herdr session refuses an old owned handle", () => {

@@ -23,7 +23,8 @@ let a = process.argv.slice(2); if (a[0] === "--session") a = a.slice(2);
 fs.appendFileSync(process.env.FAILURE_LOG, JSON.stringify(a) + "\\n");
 const p = process.env.FAILURE_STATE; const s = JSON.parse(fs.readFileSync(p));
 if ([s.fail].flat().includes(a[1]) && (!s.failPane || s.failPane === a[2])) { if (s.lateSidecar) fs.writeFileSync(s.lateSidecar,JSON.stringify({type:"done"})); process.stderr.write(JSON.stringify({error:{code:a[1] === "close" ? "protected_close" : "pane_not_found"}})); process.exit(1); }
-if (a[1] === "split") { s.sequence++; fs.writeFileSync(p,JSON.stringify(s)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+s.sequence,terminal_id:"terminal-"+s.sequence,workspace_id:"workspace",tab_id:"tab"}}})); }
+if (a[1] === "layout") console.log(JSON.stringify({result:{layout:{zoomed:!!s.zoomed}}}));
+else if (a[1] === "split") { s.sequence++; fs.writeFileSync(p,JSON.stringify(s)); console.log(JSON.stringify({result:{pane:{pane_id:"child-"+s.sequence,terminal_id:"terminal-"+s.sequence,workspace_id:"workspace",tab_id:"tab"}}})); }
 else if (a[1] === "get") console.log(JSON.stringify({result:{pane:{pane_id:a[2],terminal_id:"terminal-"+a[2].split("-")[1],workspace_id:s.moved ? "foreign-workspace" : "workspace",tab_id:"tab"}}}));
 else if (["rename","close"].includes(a[1])) console.log(JSON.stringify({result:{}}));
 else if (a[1] === "read") console.log("synthetic active child");
@@ -139,4 +140,24 @@ test("parallel child failure and completion keep independent ownership and resul
   assert.ok(messages.some((m: any) => /Herdr read failed/.test(m.content)));
   assert.ok(messages.some((m: any) => /SECOND_CHILD_RESULT_42/.test(m.content)));
   assert.deepEqual(h.calls().filter((a: string[])=>a[1]==="close").map((a: string[])=>a[2]).sort(),["child-1","child-2"]);
+}));
+
+
+test("existing zoom refuses background launch before creating or changing layout", async () => fixture(async h => {
+  h.configure({fail:null,zoomed:true});
+  assert.throws(() => createSurface("Zoom",h.dir),/zoom.*unzoom|unzoom.*zoom/i);
+  assert.ok(!h.calls().some((a: string[]) => ["split","zoom","focus","close"].includes(a[1])));
+}));
+
+test("resumed completion preserves new summary and cleanup rejection in its parent notification", async () => fixture(async h => {
+  h.configure({fail:"close"});
+  const sessionPath = join(h.dir,"resume-complete.jsonl");
+  writeFileSync(sessionPath,JSON.stringify({type:"session",id:"resume",version:3}) + "\n");
+  await h.tools.get("subagent_resume").execute("resume",{sessionPath,name:"ResumeCleanup"},undefined,undefined,h.ctx);
+  writeFileSync(sessionPath, readFileSync(sessionPath,"utf8") + JSON.stringify({type:"message",message:{role:"assistant",content:[{type:"text",text:"RESUMED_RESULT_42"}]}}) + "\n");
+  writeFileSync(sessionPath + ".exit",JSON.stringify({type:"done"}));
+  const m = await result(h);
+  assert.match(m.content,/RESUMED_RESULT_42/);
+  assert.match(m.content,/cleanup.*protected_close/i);
+  assert.equal(h.calls().filter((a: string[])=>a[1]==="close").length,1);
 }));
