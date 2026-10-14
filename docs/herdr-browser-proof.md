@@ -76,4 +76,22 @@ Existing guard stop/cleanup and the runtime owner's explicit exact-browser retir
 The owner tests exercise CLI admission, exact fixed spawn arguments/options, private preparation sequencing, genuine caller metadata, categorical readiness refusal, bounded timeout, early process exit, interruption retention and the synthetic HTTP boundary.
 Test adapters are injected only through imported functions and cannot be selected by production CLI or environment flags.
 They establish source/mock behavior rather than live browser isolation or native permissions.
-A real proof remains pending until the reviewed helper is explicitly launched and guard plus native host evidence pass.
+Successful browser acceptance remains pending until guard readiness and native host evidence both pass.
+
+
+## Fresh live admission result
+
+On 2026-10-14 the reviewed helper ran in a fresh task-owned, unfocused ordinary Herdr shell at the physical ticket checkout root.
+Its first invocation refused inherited browser overrides before allocating resources.
+A reviewed retry cleared those overrides only for that invocation.
+
+The public guard verified the newly launched process and private profile ownership but refused target scope.
+It reported one permitted page, one foreign target and three unsupported target types, with zero permitted workers, internal pages, internal non-page targets or malformed targets.
+The categorical report did not reveal the rejected target URLs or types; their identity and safety remain unknown.
+An incomplete process inventory does not establish resource absence or authorize cleanup.
+
+The helper stopped admission and closed only its synthetic HTTP listener, retaining the browser, profile and private diagnostic state.
+No bridge, synthetic-page navigation, native Chrome Computer Use, Pi visual request, guard exception or browser/profile cleanup followed the refusal.
+The prior focus and every preexisting workspace were preserved.
+This is live refusal-path evidence for the helper, not successful browser QA or native permission evidence.
+Ticket #41's browser criterion remains incomplete, independently of the verified native TextEdit observation and parent delivery.
