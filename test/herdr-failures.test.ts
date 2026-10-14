@@ -179,6 +179,7 @@ test("all five specialist launches pass their exact medium model to Pi without m
     const script = readFileSync(r.details.launchScriptFile,"utf8");
     assert.match(script, new RegExp(`--model 'openai-codex/${role === "planner" ? "gpt-6-astra" : "gpt-6\\.1-sol"}:medium'`));
     assert.ok(!script.includes("exec claude"));
+    if (role === "worker") assert.match(script, /--tools '[^']*\btodo\b/);
     assert.ok(h.calls().some((a: string[]) => a[1] === "rename" && a[3] === `${phase}: ${role}`));
     writeFileSync(r.details.sessionFile + ".exit",JSON.stringify({type:"done"}));
   }
