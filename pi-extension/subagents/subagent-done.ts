@@ -29,7 +29,10 @@ export function shouldAutoExitOnAgentEnd(
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg?.role === "assistant") {
-        return msg.stopReason !== "aborted";
+        // Pi 1.1.0 reports Escape during an active tool as this exact error.
+        // Preserve the interruption contract without treating other errors as aborts.
+        return msg.stopReason !== "aborted" &&
+          !(msg.stopReason === "error" && msg.errorMessage === "This operation was aborted");
       }
     }
   }
