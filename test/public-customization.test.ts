@@ -252,3 +252,40 @@ test("initial skill failure shuts down even when the parent error sidecar cannot
   assert.match(notices[0], /Configured subagent skill not found: missing/);
   assert.match(notices[1], /Could not deliver skill error to parent/);
 }));
+
+
+test("bundled specialists expose the approved exact models and medium reasoning without a Claude route", async () => isolated(async () => {
+  const h = host(); extension(h.api);
+  const listed = (await h.tools.get("subagents_list").execute()).details.agents;
+  for (const role of ["planner", "reviewer", "scout", "visual-tester", "worker"]) {
+    const def = listed.find((a: any) => a.name === role);
+    assert.equal(def.model, role === "planner" ? "openai-codex/gpt-6-astra" : "openai-codex/gpt-6.1-sol");
+    assert.equal(def.thinking, "medium");
+    assert.ok(!def.cli || def.cli === "pi");
+  }
+  assert.ok(!listed.some((a: any) => a.name === "claude-code"));
+  const notices: string[] = [];
+  await h.commands.get("subagent").handler("claude-code task", {ui:{notify:(m: string) => notices.push(m)}});
+  assert.match(notices[0], /not found/);
+  assert.equal(h.messages.length, 0);
+}));
+
+test("direct spawn, full-context iterate and all planning phases retain public workflow contracts", async () => isolated(async () => {
+  const h = host(); extension(h.api);
+  const ctx = {ui:{notify() {}}};
+  await h.commands.get("subagent").handler("worker Fix the supplied task", ctx);
+  assert.match(h.messages.pop()!, /agent: "worker".*task: "Fix the supplied task"/);
+  await h.commands.get("iterate").handler("Use the existing conversation", ctx);
+  assert.match(h.messages.pop()!, /fork: true.*name: "Iterate".*Use the existing conversation/);
+  // No multiplexer is available here: phase instructions remain a public command contract.
+  delete process.env.HERDR_ENV; process.env.PI_SUBAGENT_MUX = "herdr";
+  await h.commands.get("plan").handler("Build the requested feature", ctx);
+  const plan = h.messages.pop()!;
+  assert.match(plan, /Always spawn a scout before the planner/);
+  assert.match(plan, /name: "Investigation: Scout"/);
+  assert.match(plan, /name: "Planning: Planner"[\s\S]*interactive: true/);
+  assert.match(plan, /name: "Execution: Worker 1\/N"/);
+  assert.match(plan, /name: "Review: Reviewer"/);
+  assert.match(plan, /Always run workers sequentially/);
+  assert.match(plan, /Build the requested feature$/);
+}));

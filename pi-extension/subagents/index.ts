@@ -946,7 +946,7 @@ function failHerdrLaunch(surface: string, error: unknown): never {
 
 async function launchSubagent(
   params: typeof SubagentParams.static,
-  ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string },
+  ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string; modelRegistry?: { find(provider: string, modelId: string): unknown } },
   options?: { surface?: string },
 ): Promise<RunningSubagent> {
   const startTime = Date.now();
@@ -958,6 +958,17 @@ async function launchSubagent(
   const effectiveSkills = params.skills ?? agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
   const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
+
+  // Exact provider/model selections must not fall through Pi's default model resolution.
+  if (effectiveModel?.includes("/") && ctx.modelRegistry) {
+    const slash = effectiveModel.indexOf("/");
+    const provider = effectiveModel.slice(0, slash);
+    const modelId = effectiveModel.slice(slash + 1).replace(/:(minimal|low|medium|high|xhigh)$/, "");
+    if (!ctx.modelRegistry.find(provider, modelId)) {
+      throw new Error(`Requested model ${effectiveModel} is unavailable; no substitution was made. Configure access to this exact model before deployment.`);
+    }
+  }
+
 
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionFile) throw new Error("No session file");

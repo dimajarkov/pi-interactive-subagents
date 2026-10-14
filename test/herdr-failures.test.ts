@@ -161,3 +161,27 @@ test("resumed completion preserves new summary and cleanup rejection in its pare
   assert.match(m.content,/cleanup.*protected_close/i);
   assert.equal(h.calls().filter((a: string[])=>a[1]==="close").length,1);
 }));
+
+test("unavailable exact specialist models fail before creating a child and never substitute parent defaults", async () => fixture(async h => {
+  h.configure({fail:null});
+  h.ctx.modelRegistry = {find: () => undefined};
+  await assert.rejects(() => h.tools.get("subagent").execute("planner",{name:"Planner",agent:"planner",task:"Plan synthetic work"},undefined,undefined,h.ctx), /Requested model openai-codex\/gpt-6-astra is unavailable.*no substitution/i);
+  assert.equal(JSON.parse(readFileSync(h.state,"utf8")).sequence,0);
+}));
+
+test("all five specialist launches pass their exact medium model to Pi without mutating the parent", async () => fixture(async h => {
+  h.configure({fail:null});
+  const parentModel = {provider:"openai-codex",id:"gpt-6.1-sol",thinking:"xhigh"};
+  h.ctx.model = parentModel;
+  h.ctx.modelRegistry = {find: () => ({})};
+  for (const [role, phase] of [["planner","Planning"],["scout","Investigation"],["worker","Execution"],["reviewer","Review"],["visual-tester","Visual QA"]]) {
+    const r = await h.tools.get("subagent").execute(role,{name:`${phase}: ${role}`,agent:role,task:"Synthetic role task"},undefined,undefined,h.ctx);
+    const script = readFileSync(r.details.launchScriptFile,"utf8");
+    assert.match(script, new RegExp(`--model 'openai-codex/${role === "planner" ? "gpt-6-astra" : "gpt-6\\.1-sol"}:medium'`));
+    assert.ok(!script.includes("exec claude"));
+    assert.ok(h.calls().some((a: string[]) => a[1] === "rename" && a[3] === `${phase}: ${role}`));
+    writeFileSync(r.details.sessionFile + ".exit",JSON.stringify({type:"done"}));
+  }
+  assert.deepEqual(h.ctx.model,{provider:"openai-codex",id:"gpt-6.1-sol",thinking:"xhigh"});
+  assert.ok(h.calls().filter((a: string[]) => a[1] === "rename").every((a: string[]) => a[2].startsWith("child-")));
+}));
