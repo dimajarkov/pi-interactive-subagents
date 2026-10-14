@@ -1131,6 +1131,11 @@ async function launchSubagent(
   if (denySet.size > 0) {
     envParts.push(`PI_DENY_TOOLS=${shellEscape([...denySet].join(","))}`);
   }
+  // New terminal shells inherit the mux daemon environment, not the parent Pi's.
+  // Pass this explicit task capability only to the intended visual role.
+  if (params.agent === "visual-tester" && process.env.PI_CODEX_VISUAL_HOST) {
+    envParts.push(`PI_CODEX_VISUAL_HOST=${shellEscape(process.env.PI_CODEX_VISUAL_HOST)}`);
+  }
   envParts.push(`PI_SUBAGENT_NAME=${shellEscape(params.name)}`);
   if (params.agent) {
     envParts.push(`PI_SUBAGENT_AGENT=${shellEscape(params.agent)}`);
