@@ -79,3 +79,22 @@ The lease is explicit coordination authority, not an attestation of active nativ
 Source and deterministic queue tests alone do not establish an approved or verified Computer Use bridge.
 Acceptance still requires one actual native Pi visual-tester request serviced by the current Codex app's normal Computer Use harness, retained native tool/session provenance and actual evidence, and upstream parent findings delivery.
 No active Pi installation or configuration is changed by this candidate.
+
+### Additional native route investigation
+
+A later local proof attempt opened a fabricated task-owned TextEdit RTF document using the normal native application launch path.
+No Computer Use observation or screenshot was performed, so fixture launch is not visual evidence.
+A real native Pi parent invoked the public `subagent` tool for a visual-tester child with explicit lineage-only session seeding, the approved model, and medium thinking.
+Native Pi asked whether to trust project-local resources before loading the candidate extension.
+The proof refused project-local resources for that session and the child exited with code 1 before requesting Computer Use.
+The existing parent received the independent failure through the upstream completion mechanism; this is failure-path evidence, not successful bridge acceptance.
+A positive proof still requires a supported, explicitly authorized extension-loading route and the active Codex app's normal Computer Use observation delivered to the same waiting Pi session.
+
+The proof also exposed that a newly created terminal inherits the multiplexer daemon's environment rather than the parent Pi environment.
+The launcher now passes `PI_CODEX_VISUAL_HOST` explicitly only to the visual-tester role.
+That capability propagation is source-verified; the failed native startup did not exercise a successful visual call.
+
+The separate supported Chrome QA route verified the fresh disposable profile and live process ownership, but refused target scope because two targets had unsupported types.
+The diagnostic reported one permitted page and no foreign targets.
+No raw CDP or native interaction bypass was attempted, and the rejected owned profile/process and private evidence were retained.
+This Chrome-specific containment prerequisite remains unaccepted independently of the proposed native-app route.
