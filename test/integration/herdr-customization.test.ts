@@ -207,6 +207,9 @@ test(
     assert.ok(nested.some(e => e.type === "message" && Array.isArray(e.message.content) && e.message.content.some((c: any) => c.type === "toolCall" && c.name === "subagent")), "allowed nested public delegation called");
     assert.ok(nested.some(e => e.customType === "subagent_result" && JSON.stringify(e).includes("RESULT_Leaf39")));
     const launchResults = messages.filter(m => m.role === "toolResult" && m.toolName === "subagent");
+    const directPanes = launchResults.map(m => readFileSync(m.details.launchScriptFile, "utf8").match(/^# Surface: (.+)$/m)?.[1]);
+    assert.ok(directPanes.every(Boolean), "public launch artifacts identify all direct children");
+    assert.ok(observations.some(o => directPanes.every(id => o.panes.some((p: any) => p.id === id))), "all four direct native child panes coexist before completion");
     const standaloneLaunch = launchResults.find(m => m.details?.name === "Standalone39");
     const script = readFileSync(standaloneLaunch.details.launchScriptFile, "utf8");
     assert.match(script, /PI_DENY_TOOLS=.*subagent/);
