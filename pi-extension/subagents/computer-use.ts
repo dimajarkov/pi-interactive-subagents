@@ -24,6 +24,7 @@ function read(dir: string, name: string): any {
   privatePath(dir, true);
   const path = join(dir, name);
   privatePath(path);
+  if (lstatSync(path).size > MAX_BYTES) throw new Error('Computer Use coordination payload exceeds limit');
   const bytes = readFileSync(path);
   if (bytes.length > MAX_BYTES) throw new Error('Computer Use coordination payload exceeds limit');
   return JSON.parse(bytes.toString());
