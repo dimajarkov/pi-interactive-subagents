@@ -45,6 +45,20 @@ Native host observations verify the allowed/forbidden delegation tools and the e
 Each child session verifies the exact model and thinking level.
 Owned completed children close, and the focused workspace and preexisting workspaces remain intact.
 
+## Human-observed rendered acceptance
+
+On 2026-10-14, Dmitri manually reviewed the task-owned `Pi #39 manual widgets` workspace (`w57`) in the `handovers` session.
+The prepared parent (`w57:p1`) and interactive child (`w57:p2`, `ManualInteractive39`) used integration source `b37e04d0d267e2cf70c8509aeb688dd6bb3af9ef`, which is an ancestor of the current integration branch.
+Both test roles used `openai-codex/gpt-6.1-sol` at medium thinking with isolated configuration.
+The interactive child stayed open, while a separate completed child supplied the eight-line completion example.
+
+Dmitri confirmed that Unicode appeared correctly and multiline paste retained its line breaks.
+The child tools widget expanded and collapsed with `Ctrl+J`, remained readable and did not overlap surrounding content.
+The parent completion displayed all eight summary lines and its session reference, and collapsed with `Ctrl+O`.
+Resizing preserved readable wrapping for the widgets, editor and completion without overlap or missing text.
+These human observations complete the rendered/widget acceptance for ticket #39 alongside the separate public-boundary status evidence.
+They are not automated screenshots or a Computer Use bridge execution.
+
 ## Limits and observed upstream behavior
 
 On Pi 1.1.0, upstream artifact delivery starts the task before the separate positional skill prompts.
@@ -62,6 +76,7 @@ A nested orchestrator needs non-autoexit behavior and explicit completion so tha
 This is the upstream definition contract, not a new blanket nesting restriction.
 
 Native terminal reads expose textual widget/completion output, but do not establish pixel layout, physical keys, focus in a native client or Computer Use acceptance.
-Completion expansion and the widget toggle have real component evidence and await approved rendered/native acceptance.
+Completion expansion, the widget toggle, Unicode, paste and resize behavior now have the human-observed acceptance recorded above.
+That acceptance does not establish the Computer Use bridge in ticket #41, the native failure/recovery criteria in ticket #42 or full deployment readiness.
 The new tests do not replace the separate lifecycle/ownership, preset-model or existing-backend proofs.
 Private transcripts, prompts, auth material and terminal evidence must not be committed.
