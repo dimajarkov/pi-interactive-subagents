@@ -32,7 +32,7 @@ if (process.env.HERDR_TEST_MALFORMED === args[1]) {
 }
 if (args[1] === "read") process.stdout.write("child output\\n");
 else if (["run", "send-keys"].includes(args[1])) process.stdout.write("");
-else process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "opaque-child", terminal_id: process.env.HERDR_TEST_TERMINAL || "terminal-child" } } }));
+else process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "opaque-child", terminal_id: process.env.HERDR_TEST_TERMINAL || "terminal-child", workspace_id: "opaque-workspace", tab_id: "opaque-tab" } } }));
 `,
   { mode: 0o700 },
 );

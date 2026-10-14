@@ -439,7 +439,7 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "cleanupError"
   >,
   name: string,
 ): string {
@@ -447,6 +447,9 @@ function resolveResultPresentation(
     ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
     : "";
 
+  if (result.cleanupError) {
+    return `Sub-agent "${name}" lifecycle failed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
+  }
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
     // produce a usable result — surface the underlying provider/network
@@ -480,6 +483,7 @@ interface SubagentResult {
   error?: string;
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
+  cleanupError?: string;
   ping?: { name: string; message: string };
 }
 
@@ -930,6 +934,16 @@ function startWidgetRefresh() {
  *
  * Call watchSubagent() on the returned object to observe completion.
  */
+function failHerdrLaunch(surface: string, error: unknown): never {
+  if (getMuxBackend() !== "herdr") throw error;
+  let cleanup = "The launch-owned child was closed.";
+  try { closeSurface(surface); }
+  catch (closeError: any) {
+    cleanup = `Cleanup failed for owned child ${surface}: ${closeError?.message ?? String(closeError)}`;
+  }
+  throw new Error(`${error instanceof Error ? error.message : String(error)} ${cleanup}`);
+}
+
 async function launchSubagent(
   params: typeof SubagentParams.static,
   ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string },
@@ -970,6 +984,7 @@ async function launchSubagent(
   // For new surfaces, pause briefly so the shell is ready before sending the command.
   const surfacePreCreated = !!options?.surface;
   const surface = options?.surface ?? createSurface(params.name, targetCwdForSession);
+  try {
   if (!surfacePreCreated) {
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
@@ -1215,6 +1230,11 @@ async function launchSubagent(
 
   runningSubagents.set(id, running);
   return running;
+  } catch (error) {
+    // Supplied surfaces were not created by this launch and are never cleaned here.
+    if (surfacePreCreated) throw error;
+    return failHerdrLaunch(surface, error);
+  }
 }
 
 /**
@@ -1248,6 +1268,13 @@ async function watchSubagent(
   signal: AbortSignal,
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
+  let cleanupAttempted = false;
+  let cleanupError: string | undefined;
+  const cleanup = () => {
+    cleanupAttempted = true;
+    try { closeSurface(surface); }
+    catch (error: any) { cleanupError = error?.message ?? String(error); }
+  };
 
   try {
     const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
@@ -1291,10 +1318,12 @@ async function watchSubagent(
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
 
-      closeSurface(surface);
+      cleanup();
       runningSubagents.delete(running.id);
-
-      return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
+      if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
+      return { name, task, summary, exitCode: cleanupError ? 1 : result.exitCode, elapsed,
+        ...(cleanupError ? { cleanupError } : {}),
+        ...(sessionId ? { claudeSessionId: sessionId } : {}) };
     }
 
     // Pi subagent result extraction
@@ -1316,30 +1345,31 @@ async function watchSubagent(
           : "Sub-agent exited without output";
     }
 
-    closeSurface(surface);
+    cleanup();
     runningSubagents.delete(running.id);
+    if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
 
     return {
       name,
       task,
       summary,
       sessionFile,
-      exitCode: result.exitCode,
+      exitCode: cleanupError ? 1 : result.exitCode,
       elapsed,
       ping: result.ping,
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      ...(cleanupError ? { cleanupError } : {}),
     };
   } catch (err: any) {
-    try {
-      closeSurface(surface);
-    } catch {}
+    if (!cleanupAttempted) cleanup();
+    const cleanupDetail = cleanupError ? ` Cleanup failed for owned child ${surface}: ${cleanupError}` : "";
     runningSubagents.delete(running.id);
 
     if (signal.aborted) {
       return {
         name,
         task,
-        summary: "Subagent cancelled.",
+        summary: `Subagent cancelled.${cleanupDetail}`,
         exitCode: 1,
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         error: "cancelled",
@@ -1349,7 +1379,7 @@ async function watchSubagent(
     return {
       name,
       task,
-      summary: `Subagent error: ${err?.message ?? String(err)}`,
+      summary: `Subagent error: ${err?.message ?? String(err)}${cleanupDetail}`,
       exitCode: 1,
       elapsed: Math.floor((Date.now() - startTime) / 1000),
       error: err?.message ?? String(err),
@@ -1498,6 +1528,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
               },
@@ -1794,6 +1825,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const entryCountBefore = getNewEntries(params.sessionPath, 0).length;
 
         const surface = createSurface(name, ctx.cwd);
+        try {
         await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
         // Build pi resume command
@@ -1960,6 +1992,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             status: "started",
           },
         };
+        } catch (error) {
+          return failHerdrLaunch(surface, error);
+        }
       },
     });
 
