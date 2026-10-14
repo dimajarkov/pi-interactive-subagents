@@ -320,6 +320,9 @@ export class HerdrParent {
           return this.poll(condition, sessionFile, signal, onTick);
         throw error;
       }
+      // Native completion may be written while the asynchronous status response is in flight.
+      if (existsSync(sessionFile + ".exit"))
+        return this.poll(condition, sessionFile, signal, onTick);
       if (status.phase === "exited") {
         if (!status.exit || !Number.isInteger(status.exit.code))
           throw new Error("Herdr retained an uncertain job exit; completion sidecar missing");

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrParent } from "../pi-extension/subagents/herdr-parent.ts";
@@ -74,7 +74,8 @@ async function fixture(fn: (h: any) => Promise<void>, supported = true) {
             exit: null,
           };
         }
-        if (req.method === "terminal.job.get")
+        if (req.method === "terminal.job.get") {
+          if (state.lateSidecar) writeFileSync(state.lateSidecar, JSON.stringify({ type: "done" }));
           result = {
             type: "managed_terminal",
             condition: req.params.condition,
@@ -88,7 +89,9 @@ async function fixture(fn: (h: any) => Promise<void>, supported = true) {
             },
             native_scope_id: "native-request",
             busy: true,
+            exit: state.exited ? { code: 7, reason: "natural_exit" } : null,
           };
+        }
         if (req.method === "agent.control.abort")
           result = {
             type: "agent_control_operation",
@@ -237,4 +240,21 @@ test("legacy empty-ID unknown-method reply explains refusal without accepting it
       /managed API unsupported.*no pane allocated.*identity mismatch/i,
     );
     assert.equal(h.calls.length, 1);
+  }));
+
+test("native completion arriving during a successful exited-job response wins and is consumed", () =>
+  fixture(async (h) => {
+    const job = await h.client.launch({
+      name: "Late done",
+      cwd: h.dir,
+      scriptPath: join(h.dir, "child.sh"),
+      command: "pi",
+    });
+    const sessionFile = join(h.dir, "native-session.jsonl");
+    h.state.exited = true;
+    h.state.lateSidecar = sessionFile + ".exit";
+    const result = await h.client.poll(job.condition, sessionFile, new AbortController().signal);
+    assert.equal(result.reason, "done");
+    assert.equal(result.exitCode, 0);
+    assert.equal(existsSync(sessionFile + ".exit"), false);
   }));
