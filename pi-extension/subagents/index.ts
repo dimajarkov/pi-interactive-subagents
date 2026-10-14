@@ -1087,6 +1087,7 @@ async function launchSubagent(
 
   const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
   parts.push("-e", shellEscape(subagentDonePath));
+  if (effectiveSkills) parts.push("-e", shellEscape(join(SUBAGENTS_DIR, "initial-skills.ts")));
 
   if (effectiveModel) {
     const model = effectiveThinking ? `${effectiveModel}:${effectiveThinking}` : effectiveModel;
@@ -1118,6 +1119,7 @@ async function launchSubagent(
 
   // Build env prefix: denied tools + subagent identity + config dir propagation
   const envParts: string[] = [];
+  if (effectiveSkills) envParts.push(`PI_SUBAGENT_SKILLS=${shellEscape(effectiveSkills)}`);
 
   // If the target cwd has its own .pi/agent/, use that as the config root.
   // Otherwise propagate the current/global agent dir.
@@ -1143,7 +1145,7 @@ async function launchSubagent(
   envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
   const envPrefix = envParts.join(" ") + " ";
 
-  // Pass task and skill prompts to the sub-agent.
+  // Pass one initial task; the child input extension applies configured skills.
   // Only full-context fork mode gets a direct task argument because it already
   // inherits the parent conversation. Blank-session modes use artifact-backed
   // handoff so the wrapper instructions arrive as the initial user message.
@@ -1166,7 +1168,7 @@ async function launchSubagent(
   }
 
   for (const promptArg of buildPiPromptArgs({
-    effectiveSkills,
+    // Skills are applied to this task by the child input extension, in one turn.
     taskDelivery: launchBehavior.taskDelivery,
     taskArg,
   })) {

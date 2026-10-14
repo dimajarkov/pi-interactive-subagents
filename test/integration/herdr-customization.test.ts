@@ -117,10 +117,10 @@ test(
     const parentSession = join(sessions, "parent.jsonl");
     const markerFor = (name: string) => join(dir, `${name}-cwd.txt`);
     const names = ["Standalone39", "Lineage39", "Fork39", "Nested39"];
-    const tasks = names.slice(0, 3).map(name => `Run exactly: sleep 30; pwd -P > ${shellEscape(markerFor(name))}. Then return exactly RESULT_${name}.`);
+    const tasks = names.slice(0, 3).map(name => `Run exactly: sleep 30; pwd -P > ${shellEscape(markerFor(name))}. Then return RESULT_${name} and apply any configured skill instructions to the final result.`);
     const nestedTask = `Call subagent with name "Leaf39", agent "proof-leaf", cwd ${JSON.stringify(childCwd)}, task ${JSON.stringify(`Run exactly: sleep 20; pwd -P > ${shellEscape(markerFor("Leaf39"))}. Return exactly RESULT_Leaf39.`)}. Write NESTED_CONTINUED_39 to ${join(dir, "nested-continued.txt")} immediately after that call. Wait for its asynchronous completion. Once its result arrives, emit assistant summary RESULT_Nested39 RESULT_Leaf39 and immediately invoke subagent_done with empty arguments {} before ending your turn. Do not merely return final text; the task is complete only after that tool call.`;
     const calls = [
-      { name: names[0], agent: "proof-standalone", task: tasks[0], cwd: childCwd, model, tools: "bash,read", interactive: true },
+      { name: names[0], agent: "proof-standalone", task: tasks[0], cwd: childCwd, model, tools: "bash,read" },
       { name: names[1], agent: "proof-lineage", task: tasks[1], cwd: childCwd },
       { name: names[2], agent: "proof-fork", task: tasks[2], cwd: childCwd, fork: true },
       { name: names[3], agent: "proof-nested", task: nestedTask, cwd: project },
@@ -201,6 +201,7 @@ test(
     assert.ok(!JSON.stringify(standalone).includes("PRIOR_CONTEXT_39"));
     assert.ok(!JSON.stringify(lineage).includes("PRIOR_CONTEXT_39"));
     assert.ok(JSON.stringify(fork).includes("PRIOR_CONTEXT_39"), "fork copies actual prior native parent context");
+    assert.ok(JSON.stringify(results.find(r => r.details.name === "Standalone39")).includes("SKILL_APPLIED_39"), "configured skill influences the auto-exiting task result");
     assert.ok(standalone.some(e => e.type === "message" && e.message.role === "user" && JSON.stringify(e.message.content).includes("Include SKILL_APPLIED_39 in your final result")), "skill template expanded into native child conversation");
 
     const nested = childSessions.get("Nested39")!;
@@ -213,7 +214,7 @@ test(
     const standaloneLaunch = launchResults.find(m => m.details?.name === "Standalone39");
     const script = readFileSync(standaloneLaunch.details.launchScriptFile, "utf8");
     assert.match(script, /PI_DENY_TOOLS=.*subagent/);
-    assert.match(script, /\/skill:native-proof/);
+    assert.match(script, /PI_SUBAGENT_SKILLS='native-proof'/);
     const standaloneCaps = JSON.parse(readFileSync(results.find(r => r.details.name === "Standalone39").details.sessionFile + ".capabilities.json", "utf8"));
     assert.equal(standaloneCaps.cwd, childCwd);
     assert.ok(!standaloneCaps.allTools.includes("subagent"), "native forbidden nested delegation absent");
@@ -253,6 +254,7 @@ test(
           children: [...seenChildren.values()],
           parallelIndependentResults: true,
           nativeContextModes: true,
+          configuredSkillInfluencesAutoexitResult: true,
           allowedNestedDelegation: true,
           model,
           thinking: "medium",

@@ -190,3 +190,45 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
     assert.equal(interactive.details.status, "started");
   } finally { emit("session_shutdown"); Date.now = now; }
 }));
+
+
+test("configured skills transform the initial task before its first autonomous turn", async () => isolated(async dir => {
+  process.env.PI_SUBAGENT_SKILLS = "first,second";
+  const first = join(dir, "first.md");
+  const second = join(dir, "second.md");
+  writeFileSync(first, "---\nname: first\ndescription: First synthetic skill.\n---\nAlways include FIRST_MARKER.");
+  writeFileSync(second, "---\nname: second\ndescription: Second synthetic skill.\n---\nAlways include SECOND_MARKER.");
+  const { default: skillsExtension } = await import("../pi-extension/subagents/initial-skills.ts");
+  const h = host();
+  h.api.getCommands = () => [
+    { name: "skill:first", source: "skill", sourceInfo: { path: first } },
+    { name: "skill:second", source: "skill", sourceInfo: { path: second } },
+  ];
+  skillsExtension(h.api);
+  const input = h.events.get("input")![0];
+  const result = await input({ text: "Perform TASK_MARKER.", images: undefined, source: "interactive" });
+  assert.equal(result.action, "transform");
+  assert.match(result.text, /FIRST_MARKER/);
+  assert.match(result.text, /SECOND_MARKER/);
+  assert.match(result.text, /References are relative to /);
+  assert.ok(result.text.endsWith("Perform TASK_MARKER."));
+  assert.doesNotMatch(result.text, /description:/);
+  assert.deepEqual(await input({ text: "Human follow-up", source: "interactive" }), { action: "continue" });
+}));
+
+
+test("missing configured skill stops initial execution with an actionable error", async () => isolated(async dir => {
+  process.env.PI_SUBAGENT_SKILLS = "missing";
+  process.env.PI_SUBAGENT_SESSION = join(dir, "failed.jsonl");
+  let shutdown = false;
+  const { default: skillsExtension } = await import("../pi-extension/subagents/initial-skills.ts");
+  const h = host();
+  h.api.getCommands = () => [];
+  skillsExtension(h.api);
+  const notices: string[] = [];
+  const result = await h.events.get("input")![0]({ text: "Do not execute without skill." }, { shutdown() { shutdown = true; }, ui: { notify: (text: string) => notices.push(text) } });
+  assert.equal(shutdown, true);
+  assert.deepEqual(JSON.parse(readFileSync(process.env.PI_SUBAGENT_SESSION + ".exit", "utf8")), { type: "error", errorMessage: "Configured subagent skill not found: missing", stopReason: "error" });
+  assert.deepEqual(result, { action: "handled" });
+  assert.match(notices[0], /Configured subagent skill not found: missing/);
+}));

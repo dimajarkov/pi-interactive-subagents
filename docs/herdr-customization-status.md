@@ -47,10 +47,17 @@ Owned completed children close, and the focused workspace and preexisting worksp
 
 ## Limits and observed upstream behavior
 
-The skills option expands the named skill template into the native child conversation.
-On the installed Pi 1.1.0 runtime, an autoexit child's initial artifact task can finish before a queued skill prompt affects its result.
-This slice does not claim that template expansion proves the skill influenced the completed model task.
-The unchanged upstream multiple-prompt/autoexit timing remains an acceptance limitation to reconcile before claiming complete skill behavior.
+On Pi 1.1.0, upstream artifact delivery starts the task before the separate positional skill prompts.
+An autoexit child can terminate before those prompts run.
+The fork now transforms the initial child input with explicitly configured skill contents, using the child's public resolved command inventory so settings, packages and project/global discovery remain native.
+All configured skills and the task run in one initial turn.
+Missing or unreadable skills stop that initial task, write the existing parent error sidecar and shut the failed child down.
+The parent receives a failure with exit code 1 and the precise skill error.
+Later human input is left untouched.
+The public input regression covers multiple skills, native relative-reference locations, one-time application and missing-skill failure.
+The native proof requires the final autoexit child result to include a marker that appears only in its configured skill.
+The Pi 1.1.0 native run passed this assertion along with all existing parallel/context/capability checks.
+A subsequent public missing-skill child call delivered its precise missing-skill error asynchronously to the parent with exit code 1 and without executing the task.
 A nested orchestrator needs non-autoexit behavior and explicit completion so that its first waiting turn does not terminate it before leaf delivery.
 This is the upstream definition contract, not a new blanket nesting restriction.
 
