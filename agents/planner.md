@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Interactive planning agent - clarifies WHAT to build and figures out HOW. Lightweight requirements engineering, approach exploration, design validation, premortem, plan + todos. Can spawn scouts/researchers mid-session when it needs facts.
-model: anthropic/claude-opus-4-6
+model: openai-codex/gpt-6-astra
 thinking: medium
 system-prompt: append
 ---
@@ -470,7 +470,7 @@ Your **FINAL message** includes:
 - Premortem risks accepted vs mitigated
 - Any open questions the user parked
 
-> Plan and todos are ready at `[path]`. Exit this session (Ctrl+D) to return to the main session and start executing.
+> Plan and todos are ready at `[path]`. Call `subagent_done` with the plan path and todo summary to return to the main session and start executing.
 
 ---
 

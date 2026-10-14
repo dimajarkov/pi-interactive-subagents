@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const ownedPanes = new Map<string, { terminal: string; caller: string }>();
+const ownedPanes = new Map<string, { terminal: string; workspace: string; tab: string; caller: string }>();
 
 function callerIdentity(): string {
   return JSON.stringify([
@@ -81,7 +81,8 @@ function verifyOwned(pane: string): void {
   if (receipt.caller !== callerIdentity())
     throw new Error("Herdr caller context changed; refusing the old child handle.");
   const current = call(["get", pane]).pane;
-  if (current?.pane_id !== pane || current?.terminal_id !== receipt.terminal) {
+  if (current?.pane_id !== pane || current?.terminal_id !== receipt.terminal ||
+      current?.workspace_id !== receipt.workspace || current?.tab_id !== receipt.tab) {
     throw new Error(`Herdr child ${pane} is stale or replaced; refusing to target it.`);
   }
 }
@@ -98,6 +99,13 @@ export function createHerdrSurface(
   }
   if (fromSurface && fromSurface !== process.env.HERDR_PANE_ID) verifyOwned(fromSurface);
   const target = fromSurface ? ["--pane", fromSurface] : ["--current"];
+  const layout = call(["layout", ...target]).layout;
+  if (typeof layout?.zoomed !== "boolean") {
+    throw new Error("Herdr layout returned no safe zoom state; inspect the caller layout before retrying. No pane was created.");
+  }
+  if (layout.zoomed) {
+    throw new Error("Herdr caller layout is zoomed; unzoom it manually before launching a background child. No layout was changed.");
+  }
   const pane = call([
     "split",
     ...target,
@@ -113,13 +121,16 @@ export function createHerdrSurface(
     !pane.pane_id ||
     typeof pane.terminal_id !== "string" ||
     !pane.terminal_id ||
+    typeof pane.workspace_id !== "string" || !pane.workspace_id ||
+    typeof pane.tab_id !== "string" || !pane.tab_id ||
     pane.pane_id === process.env.HERDR_PANE_ID
   ) {
     throw new Error(
       "Herdr split returned no safe child identity; inspect the caller layout before retrying. No pane was guessed or closed.",
     );
   }
-  ownedPanes.set(pane.pane_id, { terminal: pane.terminal_id, caller: callerIdentity() });
+  ownedPanes.set(pane.pane_id, { terminal: pane.terminal_id, workspace: pane.workspace_id,
+    tab: pane.tab_id, caller: callerIdentity() });
   try {
     verifyOwned(pane.pane_id);
     call(["rename", pane.pane_id, name]);

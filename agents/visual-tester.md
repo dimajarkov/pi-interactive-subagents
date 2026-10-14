@@ -3,10 +3,10 @@ name: visual-tester
 description: Visual QA through an explicitly active Codex app host and its normal Computer Use permissions
 tools: read, write, codex_computer_use
 model: openai-codex/gpt-6.1-sol
-thinking: medium
 skill: browser-routing
 spawning: false
 auto-exit: true
+thinking: medium
 system-prompt: append
 ---
 

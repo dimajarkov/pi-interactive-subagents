@@ -440,7 +440,7 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "cleanupError"
   >,
   name: string,
 ): string {
@@ -448,6 +448,9 @@ function resolveResultPresentation(
     ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
     : "";
 
+  if (result.cleanupError) {
+    return `Sub-agent "${name}" lifecycle failed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
+  }
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
     // produce a usable result — surface the underlying provider/network
@@ -481,6 +484,7 @@ interface SubagentResult {
   error?: string;
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
+  cleanupError?: string;
   ping?: { name: string; message: string };
 }
 
@@ -931,9 +935,19 @@ function startWidgetRefresh() {
  *
  * Call watchSubagent() on the returned object to observe completion.
  */
+function failHerdrLaunch(surface: string, error: unknown): never {
+  if (getMuxBackend() !== "herdr") throw error;
+  let cleanup = "The launch-owned child was closed.";
+  try { closeSurface(surface); }
+  catch (closeError: any) {
+    cleanup = `Cleanup failed for owned child ${surface}: ${closeError?.message ?? String(closeError)}`;
+  }
+  throw new Error(`${error instanceof Error ? error.message : String(error)} ${cleanup}`);
+}
+
 async function launchSubagent(
   params: typeof SubagentParams.static,
-  ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string },
+  ctx: { sessionManager: { getSessionFile(): string | null; getSessionId(): string; getSessionDir(): string }; cwd: string; modelRegistry?: { find(provider: string, modelId: string): unknown } },
   options?: { surface?: string },
 ): Promise<RunningSubagent> {
   const startTime = Date.now();
@@ -945,6 +959,17 @@ async function launchSubagent(
   const effectiveSkills = params.skills ?? agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
   const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
+
+  // Exact provider/model selections must not fall through Pi's default model resolution.
+  if (effectiveModel?.includes("/") && ctx.modelRegistry) {
+    const slash = effectiveModel.indexOf("/");
+    const provider = effectiveModel.slice(0, slash);
+    const modelId = effectiveModel.slice(slash + 1).replace(/:(minimal|low|medium|high|xhigh)$/, "");
+    if (!ctx.modelRegistry.find(provider, modelId)) {
+      throw new Error(`Requested model ${effectiveModel} is unavailable; no substitution was made. Configure access to this exact model before deployment.`);
+    }
+  }
+
 
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionFile) throw new Error("No session file");
@@ -971,6 +996,7 @@ async function launchSubagent(
   // For new surfaces, pause briefly so the shell is ready before sending the command.
   const surfacePreCreated = !!options?.surface;
   const surface = options?.surface ?? createSurface(params.name, targetCwdForSession);
+  try {
   if (!surfacePreCreated) {
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
@@ -1088,6 +1114,7 @@ async function launchSubagent(
 
   const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
   parts.push("-e", shellEscape(subagentDonePath));
+  if (effectiveSkills) parts.push("-e", shellEscape(join(SUBAGENTS_DIR, "initial-skills.ts")));
 
   if (effectiveModel) {
     const model = effectiveThinking ? `${effectiveModel}:${effectiveThinking}` : effectiveModel;
@@ -1119,6 +1146,7 @@ async function launchSubagent(
 
   // Build env prefix: denied tools + subagent identity + config dir propagation
   const envParts: string[] = [];
+  if (effectiveSkills) envParts.push(`PI_SUBAGENT_SKILLS=${shellEscape(effectiveSkills)}`);
 
   // If the target cwd has its own .pi/agent/, use that as the config root.
   // Otherwise propagate the current/global agent dir.
@@ -1149,7 +1177,7 @@ async function launchSubagent(
   envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
   const envPrefix = envParts.join(" ") + " ";
 
-  // Pass task and skill prompts to the sub-agent.
+  // Pass one initial task; the child input extension applies configured skills.
   // Only full-context fork mode gets a direct task argument because it already
   // inherits the parent conversation. Blank-session modes use artifact-backed
   // handoff so the wrapper instructions arrive as the initial user message.
@@ -1172,7 +1200,7 @@ async function launchSubagent(
   }
 
   for (const promptArg of buildPiPromptArgs({
-    effectiveSkills,
+    // Skills are applied to this task by the child input extension, in one turn.
     taskDelivery: launchBehavior.taskDelivery,
     taskArg,
   })) {
@@ -1221,6 +1249,11 @@ async function launchSubagent(
 
   runningSubagents.set(id, running);
   return running;
+  } catch (error) {
+    // Supplied surfaces were not created by this launch and are never cleaned here.
+    if (surfacePreCreated) throw error;
+    return failHerdrLaunch(surface, error);
+  }
 }
 
 /**
@@ -1254,6 +1287,13 @@ async function watchSubagent(
   signal: AbortSignal,
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
+  let cleanupAttempted = false;
+  let cleanupError: string | undefined;
+  const cleanup = () => {
+    cleanupAttempted = true;
+    try { closeSurface(surface); }
+    catch (error: any) { cleanupError = error?.message ?? String(error); }
+  };
 
   try {
     const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
@@ -1297,10 +1337,12 @@ async function watchSubagent(
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
 
-      closeSurface(surface);
+      cleanup();
       runningSubagents.delete(running.id);
-
-      return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
+      if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
+      return { name, task, summary, exitCode: cleanupError ? 1 : result.exitCode, elapsed,
+        ...(cleanupError ? { cleanupError } : {}),
+        ...(sessionId ? { claudeSessionId: sessionId } : {}) };
     }
 
     // Pi subagent result extraction
@@ -1322,30 +1364,31 @@ async function watchSubagent(
           : "Sub-agent exited without output";
     }
 
-    closeSurface(surface);
+    cleanup();
     runningSubagents.delete(running.id);
+    if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
 
     return {
       name,
       task,
       summary,
       sessionFile,
-      exitCode: result.exitCode,
+      exitCode: cleanupError ? 1 : result.exitCode,
       elapsed,
       ping: result.ping,
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      ...(cleanupError ? { cleanupError } : {}),
     };
   } catch (err: any) {
-    try {
-      closeSurface(surface);
-    } catch {}
+    if (!cleanupAttempted) cleanup();
+    const cleanupDetail = cleanupError ? ` Cleanup failed for owned child ${surface}: ${cleanupError}` : "";
     runningSubagents.delete(running.id);
 
     if (signal.aborted) {
       return {
         name,
         task,
-        summary: "Subagent cancelled.",
+        summary: `Subagent cancelled.${cleanupDetail}`,
         exitCode: 1,
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         error: "cancelled",
@@ -1355,7 +1398,7 @@ async function watchSubagent(
     return {
       name,
       task,
-      summary: `Subagent error: ${err?.message ?? String(err)}`,
+      summary: `Subagent error: ${err?.message ?? String(err)}${cleanupDetail}`,
       exitCode: 1,
       elapsed: Math.floor((Date.now() - startTime) / 1000),
       error: err?.message ?? String(err),
@@ -1505,6 +1548,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
               },
@@ -1801,6 +1845,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const entryCountBefore = getNewEntries(params.sessionPath, 0).length;
 
         const surface = createSurface(name, ctx.cwd);
+        try {
         await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
         // Build pi resume command
@@ -1923,7 +1968,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   ? `Resumed session exited with code ${result.exitCode}`
                   : "Resumed session exited without new output");
             const presentation = resolveResultPresentation(
-              { ...result, summary, sessionFile: params.sessionPath },
+              { ...result, summary: result.cleanupError
+                ? `${summary}\n\nCleanup failed for resumed child ${surface}: ${result.cleanupError}`
+                : summary, sessionFile: params.sessionPath },
               name,
             );
 
@@ -1939,6 +1986,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
@@ -1967,6 +2015,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             status: "started",
           },
         };
+        } catch (error) {
+          return failHerdrLaunch(surface, error);
+        }
       },
     });
 

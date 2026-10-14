@@ -1321,7 +1321,7 @@ export async function pollForExit(
       if (match) {
         return { reason: "sentinel", exitCode: parseInt(match[1], 10) };
       }
-    } catch {
+    } catch (error) {
       // Surface may have been destroyed — check if .exit file appeared in the meantime
       if (options.sessionFile) {
         try {
@@ -1333,6 +1333,10 @@ export async function pollForExit(
           }
         } catch {}
       }
+      // An owned Herdr target that cannot be read is a lifecycle failure.
+      // Preserve a concurrently written exit sidecar above, but never strand
+      // a watcher after manual closure, stale identity, or a CLI read failure.
+      if (getMuxBackend() === "herdr") throw error;
     }
 
     const elapsed = Math.floor((Date.now() - start) / 1000);

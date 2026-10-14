@@ -5,7 +5,7 @@ description: >
   which clarifies WHAT to build and figures out HOW, with the ability to
   spawn its own scouts/researchers mid-session. Use when asked to "plan",
   "brainstorm", "I want to build X", or "let's design". Requires the
-  subagents extension and a supported multiplexer (cmux/tmux/zellij).
+  subagents extension and a supported multiplexer (Herdr/cmux/tmux/zellij/WezTerm).
 ---
 
 # Plan
@@ -68,7 +68,7 @@ Standard filenames:
 
 ```typescript
 subagent({
-  name: "🔍 Scout",
+  name: "Investigation: Scout",
   agent: "scout",
   task: `Analyze the codebase for [user's request area]. Map file structure, key modules, patterns, conventions, and existing code related to [feature area]. Focus on what a planner would need to understand before designing this feature.
 
@@ -88,7 +88,7 @@ Spawn the interactive planner with the scout's context and the user's request. T
 
 ```typescript
 subagent({
-  name: "💬 Planner",
+  name: "Planning: Planner",
   agent: "planner",
   interactive: true,
   task: `Plan: [what the user wants to build]
@@ -103,7 +103,8 @@ Create todos tagged with: <name>`,
 
 **The user works with the planner.** It will clarify requirements lightly (1-2 rounds of questions, not a deep spec session), propose approaches, validate the design, run a premortem, write the plan, and create todos with mandatory code examples.
 
-When done, the user presses Ctrl+D and the plan + todos are returned to the main session.
+When done, the planner uses `subagent_done` to return the plan and todos to the main session.
+Human takeover disables auto-exit; closing the terminal is not the completion protocol.
 
 ### The planner may spawn its own specialists
 
@@ -119,7 +120,7 @@ If the planner significantly changed scope (new subsystems, areas the original s
 
 ```typescript
 subagent({
-  name: "🔍 Scout (updated scope)",
+  name: "Investigation: Scout (updated scope)",
   agent: "scout",
   task: "The plan changed scope. Gather context for [new areas]. Read the plan at [plan path]. Focus on [specific files/modules the planner identified that weren't in the original scout].",
 });
@@ -150,14 +151,14 @@ Spawn workers sequentially. Each worker gets the plan path and scout context:
 ```typescript
 // Workers execute todos sequentially — one at a time
 subagent({
-  name: "🔨 Worker 1/N",
+  name: "Execution: Worker 1/N",
   agent: "worker",
   task: "Implement TODO-xxxx. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary from Phase 2, plus any re-scout from Phase 3]",
 });
 
 // Check result, then next todo
 subagent({
-  name: "🔨 Worker 2/N",
+  name: "Execution: Worker 2/N",
   agent: "worker",
   task: "Implement TODO-yyyy. Mark the todo as done. Plan: [plan path]\n\nScout context: [paste scout summary]",
 });
@@ -173,7 +174,7 @@ After all todos are complete:
 
 ```typescript
 subagent({
-  name: "Reviewer",
+  name: "Review: Reviewer",
   agent: "reviewer",
   interactive: false,
   task: "Review the recent changes. Plan: [plan path]",
