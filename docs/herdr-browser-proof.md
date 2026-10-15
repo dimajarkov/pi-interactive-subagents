@@ -24,6 +24,7 @@ This placement check is not a replacement for the removed browser guard or an up
 The helper creates a new private task directory and empty disposable profile, plus a fresh synthetic HTTP fixture bound only to `127.0.0.1`.
 The fixed fixture has a unique visible title/token, fabricated account label, counter and draft input, with no external assets or provider operations.
 It serves only its fixed document with a restrictive content policy.
+The owner verifies its HTTP 200 response before launching Chrome and again after initial public page discovery.
 The fixture and profile are not browser-network confinement.
 
 Chrome is a referenced child of the foreground repository owner, using the fixed stable executable, fresh profile, loopback CDP, disabled sync/extensions, mock keychain, basic password store and no-first-run/default-browser flags.
@@ -44,7 +45,7 @@ The private profile's inode, type, ownership and permissions must remain unchang
 Missing, malformed, stale, foreign or ambiguous evidence fails closed.
 These are checks of this runtime's own resources, not a generic browser-target allowlist or an OS security sandbox.
 
-The owner invokes the public CLI's `pages` command and, when needed, `selectpage` for the discovered exact fixture ID, with a source-constructed environment:
+The owner asynchronously invokes the public CLI's `pages` command and, when needed, `selectpage` for the discovered exact fixture ID, with a source-constructed environment:
 
 - `CHROME_DEVTOOLS_AXI_SESSION` selects the newly allocated named session.
 - `CHROME_DEVTOOLS_AXI_PORT` selects its reserved bridge port.
@@ -52,6 +53,7 @@ The owner invokes the public CLI's `pages` command and, when needed, `selectpage
 - `CHROME_DEVTOOLS_AXI_MCP_PATH` selects the existing declared npm MCP entry point without fallback installation.
 
 Personal auto-connect, inherited profile selection, shared MCP URLs and arbitrary backend overrides are not forwarded.
+CLI execution remains asynchronous so the same-process synthetic HTTP server can answer Chrome while the upstream bridge starts or selects a page.
 Upstream launches its own detached bridge as its supported implementation.
 The repository owner keeps Chrome and the fixture foreground-owned; there is no custom foreground attach-bridge command.
 
@@ -65,6 +67,10 @@ Chrome ownership is rechecked after the public command, and the new bridge's rec
 While foreground, the owner monitors those original process/profile/listener identities and closes the fixture on loss.
 It does not navigate or inspect unrelated pages or reconstruct the deleted browser UI target rejection policy.
 Do not issue standalone CLI commands from copied state; further diagnostics require fresh owner verification and reviewed scope.
+Initial and selected-readback page outputs are retained in private 0600 diagnostic files before any parsing refusal can close the fixture.
+The private state records those paths and the observed fixture HTTP statuses.
+A failed page observation is not retrospectively explained by querying the browser after its fixture has closed.
+OS process probes use the fixed C locale for consistent start-identity text.
 The unsigned private state file is convenience evidence, not a durable approval lease.
 
 ## Native proof
@@ -93,6 +99,7 @@ Retiring exact resources requires separate current ownership verification and sc
 
 Tests exercise admission, fresh-session sequencing, fixed launch/environment, fresh-session selection and unchanged-ID/URL readback, ownership failure, profile changes, interruption retention and the synthetic HTTP boundary.
 A real newly spawned Node process and IPv4 listener exercise macOS process/socket parsing without launching a browser.
+An actual child HTTP request to the owner fixture while a CLI command is pending reproduces synchronous starvation and verifies the asynchronous command boundary.
 Test adapters are import-only and cannot be selected by production CLI or environment.
 Source/mock and Node process/socket evidence do not establish successful Chrome isolation or native permissions.
 Browser acceptance still requires a fresh actual Chrome run and root Computer Use evidence.

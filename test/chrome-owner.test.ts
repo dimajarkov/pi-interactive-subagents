@@ -19,6 +19,7 @@ function fixtureDeps(pages='pages[1]{id,url,selected}:\n  1,http://127.0.0.1:410
  const deps:any={platform:'darwin',env:{HERDR_ENV:'1',HERDR_SESSION:'handovers'},cwd:'/repo',sourceRoot:'/repo',now:()=>1000,
   preflight(){return {workspace:'w1'};},createState(){return {directory:'/private/state',profile:'/private/state/profile',token:'UNIQUE_TOKEN',session:'pi41_unique'};},
   async startFixture(){return {port:41001,close(){calls.push(['closeFixture']);}};},async reservePort(){return ++port;},
+  checkFixture:async()=>200,recordPages(stage:any,output:any){calls.push(['recordPages',stage,output]);},
   prepareProfile(){calls.push(['profile']);},assertFreshSession(){calls.push(['freshSession']);},
   launchChrome(args:any){calls.push(['launch',args]);return {pid:12345};},
   verifyChrome(){calls.push(['verifyChrome']);},verifyBridge(){calls.push(['verifyBridge']);},
@@ -205,4 +206,29 @@ test('fresh discovery rejects malformed ids before selection and changed selecte
   await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
   assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
  }
+});
+
+// An actual child requesting the owner's HTTP fixture reproduces same-event-loop starvation.
+test('public CLI subprocess can fetch owner fixture while its command is pending',async()=>{
+ const {startFixture,executePublicCli}=await import('../scripts/qa/chrome-owner.mjs');
+ const {deps}=fixtureDeps();deps.startFixture=startFixture;deps.checkFixture=async(state:any)=>(await fetch(`${state.origin}/`)).status;
+ deps.cli=(args:any,state:any)=>{
+  const program="fetch(process.argv[1],{signal:AbortSignal.timeout(700)}).then(r=>{if(r.status!==200)process.exitCode=1;console.log(r.status)}).catch(()=>{process.exitCode=2})";
+  const command=executePublicCli(process.execPath,['-e',program,`${state.origin}/`],{timeout:2000});
+  return Promise.resolve(command).then(output=>{assert.equal(output.trim(),'200');return `pages[1]{id,url,selected}:\n  1,${state.origin}/,true`;});
+ };
+ let owner:any;
+ try {owner=await startOwner(['--task','proof'],deps);assert.equal(owner.state.phase,'ready');}
+ finally {await owner?.closeFixture();}
+});
+
+test('initial public page evidence and fixture health are retained before a refusal closes fixture',async()=>{
+ const {deps,calls}=fixtureDeps('pages[1]{id,url,selected}:\n  1,chrome-error://chromewebdata/,false');
+ await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
+ const recorded=calls.findIndex(x=>x[0]==='recordPages'&&x[1]==='initial');
+ assert.ok(recorded>=0);assert.ok(recorded<calls.findIndex(x=>x[0]==='closeFixture'));
+ assert.match(calls[recorded][2],/chrome-error:/);
+ const bad=fixtureDeps();bad.deps.checkFixture=async()=>503;
+ await assert.rejects(startOwner(['--task','proof'],bad.deps),/fixture HTTP/);
+ assert.equal(bad.calls.some(x=>x[0]==='launch'||x[0]==='cli'),false);
 });

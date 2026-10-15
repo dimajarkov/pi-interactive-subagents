@@ -1,4 +1,4 @@
-import {execFileSync,spawn} from 'node:child_process';
+import {execFile,execFileSync,spawn} from 'node:child_process';
 import {accessSync,chmodSync,closeSync,constants,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,openSync,realpathSync,renameSync,writeFileSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {createServer} from 'node:http';
@@ -23,6 +23,8 @@ export async function startOwner(argv, deps) {
   try {
     fixture=await deps.startFixture(state.token);
     state.origin=`http://127.0.0.1:${fixture.port}`;
+    state.fixtureStatus=await deps.checkFixture(state);
+    if(state.fixtureStatus!==200)throw new Error('Owned fixture HTTP readiness failed');
     state.port=await deps.reservePort();
     state.bridgePort=await deps.reservePort();
     if(state.port===state.bridgePort)throw new Error('Distinct Chrome and bridge ports required');
@@ -44,15 +46,20 @@ export async function startOwner(argv, deps) {
       }
     }
     deps.assertFreshSession(state);
-    const pages=deps.cli(['pages'],state);
+    const pages=await deps.cli(['pages'],state);
+    deps.recordPages('initial',pages,state);
+    state.fixtureStatusAfterPages=await deps.checkFixture(state);
+    if(state.fixtureStatusAfterPages!==200)throw new Error('Owned fixture HTTP readiness failed after CLI');
     const page=verifyFixturePage(pages,`${state.origin}/`,false);
     deps.verifyChrome(state);
     deps.verifyBridge(state);
     if(!page.selected){
       // A fresh upstream session has no routing selection, even if Chrome displays this page.
-      deps.cli(['selectpage',String(page.id)],state); // Upstream snapshot output is discarded.
+      await deps.cli(['selectpage',String(page.id)],state); // Upstream snapshot output is discarded.
       deps.verifyChrome(state);deps.verifyBridge(state);
-      const selected=verifyFixturePage(deps.cli(['pages'],state),`${state.origin}/`);
+      const readback=await deps.cli(['pages'],state);
+      deps.recordPages('selected',readback,state);
+      const selected=verifyFixturePage(readback,`${state.origin}/`);
       if(selected.id!==page.id)throw new Error('Synthetic fixture page id changed after selection');
       deps.verifyChrome(state);deps.verifyBridge(state);
     }
@@ -104,6 +111,11 @@ export function verifyFixturePage(output,url,requireSelected=true) {
   return {id:Number(row[1]),selected:row[3]==='true'};
 }
 
+// Import-only command seam; production always passes the fixed public CLI executable.
+export function executePublicCli(file,args,options) {
+  return new Promise((resolve,reject)=>{execFile(file,args,{encoding:'utf8',timeout:45000,maxBuffer:256000,...options},(error,stdout)=>error?reject(error):resolve(stdout));});
+}
+
 export function upstreamEnvironment(env,state,mcpPath) {
   const clean=Object.fromEntries(Object.entries(env).filter(([key])=>!/^CHROME_DEVTOOLS_/i.test(key)));
   return {...clean,CHROME_DEVTOOLS_AXI_SESSION:state.session,CHROME_DEVTOOLS_AXI_PORT:String(state.bridgePort),CHROME_DEVTOOLS_AXI_BROWSER_URL:`http://127.0.0.1:${state.port}`,CHROME_DEVTOOLS_AXI_MCP_PATH:mcpPath};
@@ -111,7 +123,7 @@ export function upstreamEnvironment(env,state,mcpPath) {
 
 /** Fixed OS probes only; no browser protocol requests. Exported for actual socket tests. */
 export function inspectProcess(pid,port) {
-  const run=(file,args)=>execFileSync(file,args,{encoding:'utf8',timeout:3000,maxBuffer:64000}).trim();
+  const run=(file,args)=>execFileSync(file,args,{encoding:'utf8',timeout:3000,maxBuffer:64000,env:{...process.env,LC_ALL:'C'}}).trim();
   const identity=run('/bin/ps',['-p',String(pid),'-o','pid=,ppid=,uid=,lstart=']);
   const match=identity.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
   if(!match) throw new Error('Owned process identity unavailable');
@@ -171,6 +183,8 @@ function productionDependencies() {
       throw new Error('Occupied upstream bridge port refused');
     },
     startFixture,
+    async checkFixture(state){const response=await fetch(`${state.origin}/`,{signal:AbortSignal.timeout(2000),redirect:'error'});await response.arrayBuffer();return response.status;},
+    recordPages(stage,output,state){const path=join(directory,`${stage}-pages.txt`);writeFileSync(path,output,{mode:0o600,flag:'wx'});(state.pagesDiagnostics??=[]).push(path);},
     async reservePort(){const s=createNetServer();await new Promise((resolve,reject)=>{s.once('error',reject);s.listen(0,'127.0.0.1',resolve);});const port=s.address().port;await new Promise(resolve=>s.close(resolve));return port;},
     verifyChrome(state){
       if(state.chromeExited)throw new Error('Owned Chrome exited');
@@ -179,7 +193,7 @@ function productionDependencies() {
       verifyProcess(evidence,{pid:state.pid,parent:process.pid,uid:process.getuid(),birth:state.birth,command:[CHROME,...state.args].join(' '),port:state.port});
       state.birth??=evidence.birth;
     },
-    cli(args,state){return execute(cli,args,upstreamEnvironment(process.env,state,mcp),45000);},
+    cli(args,state){return executePublicCli(cli,args,{cwd,env:upstreamEnvironment(process.env,state,mcp)});},
     verifyBridge(state){
       const info=JSON.parse(readFileSync(join(state.sessionDirectory,'bridge.pid'),'utf8'));
       if(!Number.isSafeInteger(info.pid)||info.pid<1||info.port!==state.bridgePort||(state.bridgePid&&state.bridgePid!==info.pid))throw new Error('Owned upstream bridge changed');
