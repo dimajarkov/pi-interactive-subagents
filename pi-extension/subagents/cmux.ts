@@ -1147,7 +1147,7 @@ export function readScreen(surface: string, lines = 50): string {
       ["cli", "get-text", "--pane-id", surface],
       { encoding: "utf8" },
     );
-    return tailLines(raw, lines);
+    return tailLines(raw.replace(/(?:\r?\n[ \t]*)+$/, ""), lines);
   }
 
   // Zellij 0.44+: use --pane-id flag + stdout instead of env var + temp file.
@@ -1193,7 +1193,7 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
       ["cli", "get-text", "--pane-id", surface],
       { encoding: "utf8" },
     );
-    return tailLines(stdout, lines);
+    return tailLines(stdout.replace(/(?:\r?\n[ \t]*)+$/, ""), lines);
   }
 
   // Zellij 0.44+: use --pane-id flag + stdout instead of env var + temp file.
