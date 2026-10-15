@@ -11,11 +11,13 @@ The Herdr addition precedes automatic detection only when its environment is pre
 Deterministic executable-boundary tests verify all four choices inside a synthetic Herdr environment.
 These fixtures establish routing behavior, not working real multiplexer sessions.
 
-The `subagent` parameter schema is byte-identical to the pinned baseline.
+Before the later TypeScript/Oxc integration, the `subagent` parameter schema was compared byte-for-byte to the pinned baseline and was identical.
+The subsequent toolchain slice retains those public schema semantics while formatting the source.
 The existing parent tools remain `subagent`, `subagent_interrupt`, `subagents_list` and `subagent_resume`; child tools remain `caller_ping` and `subagent_done`.
 Commands remain `/subagent`, `/iterate` and `/plan`.
 The source comparison found no replacement aliases, dashboard, changed context-mode schema or general Codex child backend.
-`session.ts`, `activity.ts` and `status.ts` remain unchanged from the baseline.
+The initial compatibility comparison found `session.ts`, `activity.ts` and `status.ts` unchanged from the baseline.
+The subsequent TypeScript/Oxc slice formats and types these files; the existing session, activity and status contracts remain covered by the deterministic suite.
 Standalone and lineage-only launches retain artifact task delivery, and full-context forks retain direct task delivery.
 
 Approved adaptations include exact OpenAI role models, human input permanently disabling child auto-exit, first-task skill application, explicit planner completion, app-host-serviced visual observations and Herdr managed lifecycle safety.
@@ -26,7 +28,8 @@ Normal parent async result, help and resume behavior remains in the original ext
 
 The initial integration passed all 214 deterministic tests.
 After the narrow compatibility fixes, the full suite passed 217 tests with no failures or skips.
-The additional system-prompt-mode suite passed its one test.
+The later canonical `npm test` command includes the additional system-prompt-mode test and passed all 218 tests on the merged candidate.
+`npm run typecheck`, `npm run lint` and `npm run format:check` also passed with the reviewed project-local toolchain; prose remains excluded from automatic formatting.
 The new public tests cover provider defaults, exact backend selection and WezTerm targeting/text/Escape/read/closure across the external CLI boundary.
 
 The two original upstream surface/lifecycle suite files were also invoked with all inherited mux context removed and an explicit OpenAI model.
@@ -51,6 +54,7 @@ A native Pi parent and child used `openai-codex/gpt-6.1-sol` with medium thinkin
 The public `subagent_interrupt` stopped an actual bounded bash sleep, and the same child pane/editor remained open.
 Its subsequent help-request turn failed at the provider before `caller_ping` ran, with a generic processing error and three exhausted automatic retries.
 This failure is retained and is not represented as successful recovery of that conversation.
+No fork root cause was established; the post-interruption provider/native-turn limitation remains unresolved.
 
 One fresh bounded child then successfully called `caller_ping`.
 The parent resumed that exact child session path with `autoExit: true`, received its new summary independently through `subagent_result` with exit code zero and completed its own turn.
