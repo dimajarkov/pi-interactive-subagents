@@ -45,7 +45,7 @@ The private profile's inode, type, ownership and permissions must remain unchang
 Missing, malformed, stale, foreign or ambiguous evidence fails closed.
 These are checks of this runtime's own resources, not a generic browser-target allowlist or an OS security sandbox.
 
-The owner asynchronously invokes the public CLI's `pages` command and, when needed, `selectpage` for the discovered exact fixture ID, with a source-constructed environment:
+The owner asynchronously invokes only the public CLI's read-only `pages` command with a source-constructed environment:
 
 - `CHROME_DEVTOOLS_AXI_SESSION` selects the newly allocated named session.
 - `CHROME_DEVTOOLS_AXI_PORT` selects its reserved bridge port.
@@ -53,21 +53,20 @@ The owner asynchronously invokes the public CLI's `pages` command and, when need
 - `CHROME_DEVTOOLS_AXI_MCP_PATH` selects the existing declared npm MCP entry point without fallback installation.
 
 Personal auto-connect, inherited profile selection, shared MCP URLs and arbitrary backend overrides are not forwarded.
-CLI execution remains asynchronous so the same-process synthetic HTTP server can answer Chrome while the upstream bridge starts or selects a page.
+CLI execution remains asynchronous so the same-process synthetic HTTP server can answer Chrome while the upstream bridge starts and lists pages.
 Upstream launches its own detached bridge as its supported implementation.
 The repository owner keeps Chrome and the fixture foreground-owned; there is no custom foreground attach-bridge command.
 
 Exit zero, bridge health and a named session alone are insufficient for readiness.
-The initial page inventory must contain exactly the synthetic fixture page at its exact URL and a valid numeric page ID.
-Upstream reports `selected:false` in a fresh named session until that session explicitly selects a page.
-For that initial state, the owner rechecks ownership, invokes public `selectpage` only for the discovered fixture ID, discards its snapshot output, and reads `pages` again.
-Readback must confirm the same page ID and exact URL with `selected:true`; selection success alone is insufficient.
-Ownership is checked before and after selection and readback.
+The page inventory must contain exactly the synthetic fixture page at its exact URL and a valid safe numeric page ID.
+The `selected` field must be a valid boolean; either value is acceptable because CLI routing selection does not select a native window.
+The owner does not invoke `selectpage`, snapshot, navigation or any CLI control command.
+Readiness means that owned fixture metadata is available, not that a native window has been acquired or rendered evidence observed.
 Chrome ownership is rechecked after the public command, and the new bridge's recorded PID, UID, start identity, command and exclusive loopback listener are checked.
 While foreground, the owner monitors those original process/profile/listener identities and closes the fixture on loss.
 It does not navigate or inspect unrelated pages or reconstruct the deleted browser UI target rejection policy.
 Do not issue standalone CLI commands from copied state; further diagnostics require fresh owner verification and reviewed scope.
-Initial and selected-readback page outputs are retained in private 0600 diagnostic files before any parsing refusal can close the fixture.
+Initial public page output is retained in private 0600 diagnostic files before any parsing refusal can close the fixture.
 The private state records those paths and the observed fixture HTTP statuses.
 A failed page observation is not retrospectively explained by querying the browser after its fixture has closed.
 OS process probes use the fixed C locale for consistent start-identity text.
@@ -97,7 +96,7 @@ The separate Chrome signal group prevents owner interruption from signaling Chro
 Closing the fixture ends this proof even if a rendered page remains visible.
 Retiring exact resources requires separate current ownership verification and scope.
 
-Tests exercise admission, fresh-session sequencing, fixed launch/environment, fresh-session selection and unchanged-ID/URL readback, ownership failure, profile changes, interruption retention and the synthetic HTTP boundary.
+Tests exercise admission, fresh-session sequencing, fixed launch/environment, sole exact fixture discovery with valid CLI selection booleans, ownership failure, profile changes, interruption retention and the synthetic HTTP boundary.
 A real newly spawned Node process and IPv4 listener exercise macOS process/socket parsing without launching a browser.
 An actual child HTTP request to the owner fixture while a CLI command is pending reproduces synchronous starvation and verifies the asynchronous command boundary.
 Test adapters are import-only and cannot be selected by production CLI or environment.
@@ -114,3 +113,14 @@ That refusal remains historical evidence for its original configuration.
 The user subsequently removed the custom guard in dotfiles commit `abed985`; its deleted APIs and target-category policy are not current prerequisites.
 Do not reuse the historical profile, receipt, PID, bridge or closed fixture as fresh proof.
 Ticket #41's browser criterion remains incomplete until the new upstream route and native child/parent delivery are actually exercised.
+
+## Historical async run and native acquisition boundary
+
+The subsequent async owner run observed HTTP 200 before and after page discovery, with one page at the exact owned fixture URL and `selected:false`.
+This confirmed the fixture remained responsive through upstream CLI startup.
+The old helper then invoked `selectpage`, which also takes a DOM snapshot internally, and that command failed before readiness.
+A session selection file existed afterwards, but this does not establish which part of that command failed or any native evidence.
+The owner closed only its fixture and retained its resources; no root Computer Use proof followed.
+The current helper omits that unnecessary CLI control step because this proof uses root-native window acquisition instead of later page-scoped CDP operations.
+The root must still freshly verify the actual owned window, URL, title and pixels before interaction.
+The retained failed run is historical evidence and cannot be reused as a fresh proof.

@@ -45,8 +45,8 @@ test('preexisting upstream state refuses before CLI can reuse or terminate it',a
  assert.equal(calls.some(x=>x[0]==='cli'||x[0]==='launch'),false);
 });
 
-test('upstream success cannot admit the wrong or unselected fixture page',async()=>{
- for(const pages of ['status: ready','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001.evil/,true','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,false','pages[2]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true\n  2,https://example.org/,false']) {
+test('upstream success cannot admit a foreign, malformed or multiple fixture page',async()=>{
+ for(const pages of ['status: ready','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001.evil/,true','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,unknown','pages[2]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true\n  2,https://example.org/,false']) {
   const {deps,calls}=fixtureDeps(pages);
   await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
   assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
@@ -183,28 +183,26 @@ test('post-CLI ownership loss prevents readiness and closes only fixture',async(
  assert.equal(calls.filter(x=>x[0]==='closeFixture').length,1);
 });
 
-// Installed upstream overlaySessionSelected reports false until this fresh session selects an id.
-test('fresh upstream session explicitly selects its sole fixture and confirms routing',async()=>{
- let reads=0;const {deps,calls}=fixtureDeps((args:any)=>args[0]==='pages'?`pages[1]{id,url,selected}:\n  0,http://127.0.0.1:41001/,${++reads>1}`:'snapshot discarded');
- const owner=await startOwner(['--task','proof'],deps);
- assert.equal(owner.state.phase,'ready');
- assert.deepEqual(calls.filter(x=>x[0]==='cli').map(x=>x[1]),[['pages'],['selectpage','0'],['pages']]);
- const selection=calls.findIndex(x=>x[0]==='cli'&&x[1][0]==='selectpage');
- assert.ok(calls.slice(0,selection).some(x=>x[0]==='verifyChrome'));
- assert.ok(calls.slice(0,selection).some(x=>x[0]==='verifyBridge'));
- assert.ok(calls.slice(selection+1).some(x=>x[0]==='verifyChrome'));
+// CLI routing selection is unnecessary for root-native acquisition and must not trigger snapshots.
+test('sole exact fixture is ready for native acquisition regardless of CLI selected routing',async()=>{
+ for(const selected of [false,true]) {
+  const {deps,calls}=fixtureDeps((args:any)=>{assert.deepEqual(args,['pages']);return `pages[1]{id,url,selected}:\n  0,http://127.0.0.1:41001/,${selected}`;});
+  const owner=await startOwner(['--task','proof'],deps);
+  assert.equal(owner.state.phase,'ready');
+  assert.deepEqual(calls.filter(x=>x[0]==='cli').map(x=>x[1]),[['pages']]);
+  const discovery=calls.findIndex(x=>x[0]==='cli');
+  assert.ok(calls.slice(0,discovery).some(x=>x[0]==='verifyChrome'));
+  assert.ok(calls.slice(discovery+1).some(x=>x[0]==='verifyChrome'));
+  assert.ok(calls.slice(discovery+1).some(x=>x[0]==='verifyBridge'));
+ }
 });
 
-test('fresh discovery rejects malformed ids before selection and changed selected readback',async()=>{
- for(const id of ['-1','1x','9007199254740992']){
-  const {deps,calls}=fixtureDeps(`pages[1]{id,url,selected}:\n  ${id},http://127.0.0.1:41001/,false`);
-  await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
-  assert.equal(calls.some(x=>x[0]==='cli'&&x[1][0]==='selectpage'),false);
- }
- for(const row of ['2,http://127.0.0.1:41001/,true','1,http://127.0.0.1:41001/other,true','1,http://127.0.0.1:41001/,false']) {
-  let reads=0;const {deps,calls}=fixtureDeps((args:any)=>args[0]==='pages'?`pages[1]{id,url,selected}:\n  ${++reads===1?'1,http://127.0.0.1:41001/,false':row}`:'snapshot discarded');
+test('sole fixture discovery still rejects malformed page ids and selected-field formats',async()=>{
+ for(const row of ['-1,http://127.0.0.1:41001/,false','1x,http://127.0.0.1:41001/,false','9007199254740992,http://127.0.0.1:41001/,false','1,http://127.0.0.1:41001/,unknown']){
+  const {deps,calls}=fixtureDeps(`pages[1]{id,url,selected}:\n  ${row}`);
   await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
   assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
+  assert.equal(calls.some(x=>x[0]==='cli'&&x[1][0]!=='pages'),false);
  }
 });
 

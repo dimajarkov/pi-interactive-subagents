@@ -50,19 +50,9 @@ export async function startOwner(argv, deps) {
     deps.recordPages('initial',pages,state);
     state.fixtureStatusAfterPages=await deps.checkFixture(state);
     if(state.fixtureStatusAfterPages!==200)throw new Error('Owned fixture HTTP readiness failed after CLI');
-    const page=verifyFixturePage(pages,`${state.origin}/`,false);
+    state.pageId=verifyFixturePage(pages,`${state.origin}/`).id;
     deps.verifyChrome(state);
     deps.verifyBridge(state);
-    if(!page.selected){
-      // A fresh upstream session has no routing selection, even if Chrome displays this page.
-      await deps.cli(['selectpage',String(page.id)],state); // Upstream snapshot output is discarded.
-      deps.verifyChrome(state);deps.verifyBridge(state);
-      const readback=await deps.cli(['pages'],state);
-      deps.recordPages('selected',readback,state);
-      const selected=verifyFixturePage(readback,`${state.origin}/`);
-      if(selected.id!==page.id)throw new Error('Synthetic fixture page id changed after selection');
-      deps.verifyChrome(state);deps.verifyBridge(state);
-    }
     state.phase='ready';deps.save(state);
     let closed=false;
     return {state,recheck:()=>{if(state.phase!=='ready'||state.chromeExited)throw new Error('Owned proof is no longer live');deps.verifyChrome(state);deps.verifyBridge(state);},closeFixture:async()=>{if(closed)return;closed=true;await fixture.close();state.phase='retained';deps.save(state);}};
@@ -103,11 +93,11 @@ export function launchOwnedChrome(args,options,spawnImpl=spawn) {
   } finally {closeSync(log);}
 }
 
-export function verifyFixturePage(output,url,requireSelected=true) {
+export function verifyFixturePage(output,url) {
   const lines=String(output).split('\n');
   const header=lines.findIndex(line=>line==='pages[1]{id,url,selected}:');
   const row=header<0?null:(lines[header+1]||'').match(/^  ([0-9]+),(.+),(true|false)$/);
-  if(!row||!Number.isSafeInteger(Number(row[1]))||row[2]!==url||(requireSelected&&row[3]!=='true')||/^  [0-9]+,/.test(lines[header+2]||'')) throw new Error('Exact selected synthetic fixture page is unverified');
+  if(!row||!Number.isSafeInteger(Number(row[1]))||row[2]!==url||/^  [0-9]+,/.test(lines[header+2]||'')) throw new Error('Exact sole synthetic fixture page is unverified');
   return {id:Number(row[1]),selected:row[3]==='true'};
 }
 
@@ -216,7 +206,7 @@ async function main() {
   let owner;
   try {
     owner=await startOwner(process.argv.slice(2),productionDependencies());
-    console.log(`Owned synthetic page ready. Private task state: ${join(owner.state.directory,'state.json')}`);
+    console.log(`Owned synthetic page metadata ready. Private task state: ${join(owner.state.directory,'state.json')}`);
     console.log('Keep this owner foreground. Root must freshly verify the exact synthetic Chrome window before native Computer Use.');
     let stopping=false;
     const stop=async()=>{if(stopping)return;stopping=true;await owner.closeFixture();console.log(`Fixture closed; external Chrome/profile retained: ${owner.state.directory}`);process.exit(0);};
