@@ -18,6 +18,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import {
   isMuxAvailable,
   muxSetupHint,
@@ -474,6 +475,8 @@ interface RunningSubagent {
   managed?: { client: HerdrParent; job: JobReceipt };
   startTime: number;
   sessionFile: string;
+  parentSessionId?: string;
+  parentSessionFile?: string | null;
   launchScriptFile?: string;
   activityFile?: string;
   activity?: SubagentActivityState;
@@ -497,11 +500,16 @@ interface RunningSubagent {
 
 function createSubagentsRuntime() {
   let observer = new AbortController();
+  let observerId = randomUUID();
+  let observerParentSessionId: string | undefined;
   const observerSignal = () => observer.signal;
   const receiptPath = (running: RunningSubagent) =>
     `${running.launchScriptFile ?? running.sessionFile}.lifecycle.json`;
   /** All currently running subagents, keyed by id. */
   const runningSubagents = new Map<string, RunningSubagent>();
+  function forgetRunning(running: RunningSubagent) {
+    if (runningSubagents.get(running.id) === running) runningSubagents.delete(running.id);
+  }
 
   // ── Widget management ──
 
@@ -1121,6 +1129,8 @@ function createSubagentsRuntime() {
         });
 
         const running: RunningSubagent = {
+          parentSessionId: ctx.sessionManager.getSessionId(),
+          parentSessionFile: ctx.sessionManager.getSessionFile(),
           id,
           name: params.name,
           task: params.task,
@@ -1280,6 +1290,8 @@ function createSubagentsRuntime() {
         });
 
       const running: RunningSubagent = {
+        parentSessionId: ctx.sessionManager.getSessionId(),
+        parentSessionFile: ctx.sessionManager.getSessionFile(),
         id,
         name: params.name,
         task: params.task,
@@ -1424,7 +1436,7 @@ function createSubagentsRuntime() {
         }
 
         await cleanup();
-        runningSubagents.delete(running.id);
+        forgetRunning(running);
         if (cleanupError)
           summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
         return {
@@ -1458,7 +1470,7 @@ function createSubagentsRuntime() {
       }
 
       await cleanup();
-      runningSubagents.delete(running.id);
+      forgetRunning(running);
       if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
 
       return {
@@ -1479,6 +1491,8 @@ function createSubagentsRuntime() {
           type: "subagent_observer_stopped",
           name,
           sessionFile,
+          parentSessionId: running.parentSessionId,
+          parentSessionFile: running.parentSessionFile,
           cancellation,
           cleanupOutcome: "retained",
           ...(running.managed ? { job: running.managed.job.condition } : { surface }),
@@ -1490,7 +1504,7 @@ function createSubagentsRuntime() {
         } catch (error: any) {
           receiptError = error?.message ?? String(error);
         }
-        runningSubagents.delete(running.id);
+        forgetRunning(running);
         return {
           name,
           task,
@@ -1510,7 +1524,7 @@ function createSubagentsRuntime() {
       const cleanupDetail = cleanupError
         ? ` Cleanup failed for owned child ${surface}: ${cleanupError}`
         : "";
-      runningSubagents.delete(running.id);
+      forgetRunning(running);
 
       if (signal.aborted) {
         return {
@@ -1546,7 +1560,11 @@ function createSubagentsRuntime() {
     registerVisualObservation(pi);
     // Capture the UI context for widget updates
     pi.on("session_start", (_event, ctx) => {
-      if (observer.signal.aborted) observer = new AbortController();
+      if (observer.signal.aborted) {
+        observer = new AbortController();
+        observerId = randomUUID();
+      }
+      observerParentSessionId = ctx.sessionManager.getSessionId();
       latestCtx = ctx;
     });
 
@@ -1562,6 +1580,8 @@ function createSubagentsRuntime() {
       }
       observer.abort({
         source: "observer",
+        ownerId: observerId,
+        parentSessionId: observerParentSessionId,
         event: "session_shutdown",
         reason: event.reason ?? "unspecified",
       });
@@ -2085,6 +2105,8 @@ function createSubagentsRuntime() {
 
             // Register as a running subagent for widget tracking
             const running: RunningSubagent = {
+              parentSessionId: ctx.sessionManager.getSessionId(),
+              parentSessionFile: ctx.sessionManager.getSessionFile(),
               id,
               name,
               task: params.message ?? "resumed session",
