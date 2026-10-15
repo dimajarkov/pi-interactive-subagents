@@ -14,57 +14,52 @@ test('invalid owner admission cannot allocate or launch a browser', async () => 
   assert.equal(effects,0);
 });
 
-function fixtureDeps(report:any={version:1,ownership:'verified',targets:{status:'ready',reason:'ready',counts:{permitted_page:1,permitted_worker:0,internal_page:0,internal_non_page:0,foreign_target:0,unsupported_type:0,malformed_target:0}}}) {
-  const calls:any[]=[];
-  const deps:any={platform:'darwin',env:{HERDR_ENV:'1',HERDR_SESSION:'handovers'},cwd:'/repo',sourceRoot:'/repo',now:()=>1000,
-    preflight(){calls.push(['preflight']);return {session:'handovers',workspace:'w1',pane:'w1:p1'};},
-    createState(){return {directory:'/private/state',token:'UNIQUE_TOKEN'};},
-    async startFixture(){calls.push(['fixture']);return {port:41001,close(){calls.push(['closeFixture']);}};},
-    async reservePort(){return 41002;},
-    guard(args:any){calls.push(['guard',args]);return args.includes('prepare-profile')?JSON.stringify({receipt:'/registry/new/receipt.json',profile:'/registry/new/profile',expires:new Date(7201000).toISOString()}):JSON.stringify(report);},
-    validateAllocation(){calls.push(['validateAllocation']);},
-    launchChrome(args:any){calls.push(['launch',args]);return {pid:12345};},save(s:any){calls.push(['save',s.phase]);},sleep:async()=>{},timeoutMs:1,
-  };return {deps,calls};
+function fixtureDeps(pages='pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true') {
+ const calls:any[]=[];let port=41001;
+ const deps:any={platform:'darwin',env:{HERDR_ENV:'1',HERDR_SESSION:'handovers'},cwd:'/repo',sourceRoot:'/repo',now:()=>1000,
+  preflight(){return {workspace:'w1'};},createState(){return {directory:'/private/state',profile:'/private/state/profile',token:'UNIQUE_TOKEN',session:'pi41_unique'};},
+  async startFixture(){return {port:41001,close(){calls.push(['closeFixture']);}};},async reservePort(){return ++port;},
+  prepareProfile(){calls.push(['profile']);},assertFreshSession(){calls.push(['freshSession']);},
+  launchChrome(args:any){calls.push(['launch',args]);return {pid:12345};},
+  verifyChrome(){calls.push(['verifyChrome']);},verifyBridge(){calls.push(['verifyBridge']);},
+  cli(args:any,state:any){calls.push(['cli',args,state.session]);return pages;},
+  save(state:any){calls.push(['save',state.phase]);},sleep:async()=>{},timeoutMs:1,
+ };return {deps,calls};
 }
 
-test('owned launch uses only fresh preparation and the exact vendor isolation argv',async()=>{
+test('fresh owned fixture attaches upstream named session without removed guard APIs',async()=>{
  const {deps,calls}=fixtureDeps();const owner=await startOwner(['--task','proof'],deps);
  assert.equal(owner.state.phase,'ready');
- assert.deepEqual(calls.find(x=>x[0]==='guard')[1],['--repo-qa','proof','prepare-profile','--target','http://127.0.0.1:41001']);
- assert.deepEqual(calls.find(x=>x[0]==='launch')[1],['--user-data-dir=/registry/new/profile','--remote-debugging-port=41002','--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check','--disable-features=PreloadTopChromeWebUI','about:blank']);
- assert.deepEqual(calls.filter(x=>x[0]==='guard')[1][1],['--repo-qa','proof','attach','/registry/new/receipt.json','--pid','12345','--port','41002','diagnose']);
+ assert.equal(owner.state.profile,'/private/state/profile');
+ assert.deepEqual(calls.find(x=>x[0]==='launch')[1],['--user-data-dir=/private/state/profile','--remote-debugging-port=41002','--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check','--disable-features=PreloadTopChromeWebUI','http://127.0.0.1:41001/']);
+ assert.deepEqual(calls.find(x=>x[0]==='cli'),['cli',['pages'],'pi41_unique']);
+ assert.ok(calls.findIndex(x=>x[0]==='verifyChrome')<calls.findIndex(x=>x[0]==='cli'));
+ assert.ok(calls.findIndex(x=>x[0]==='freshSession')<calls.findIndex(x=>x[0]==='cli'));
+ assert.equal(calls.filter(x=>x[0]==='verifyChrome').length,2);
 });
 
-test('malformed preparation or failed caller identity cannot launch Chrome',async()=>{
- const {deps,calls}=fixtureDeps();deps.guard=()=>JSON.stringify({receipt:'/old',profile:'/old'});
- await assert.rejects(startOwner(['--task','proof'],deps),/preparation/);
- assert.equal(calls.some(x=>x[0]==='launch'),false);
- const second=fixtureDeps();second.deps.preflight=()=>{throw new Error('foreign foreground caller');};
- await assert.rejects(startOwner(['--task','proof'],second.deps),/foreign/);
- assert.equal(second.calls.some(x=>x[0]==='fixture'),false);
+test('preexisting upstream state refuses before CLI can reuse or terminate it',async()=>{
+ const {deps,calls}=fixtureDeps();deps.assertFreshSession=()=>{throw new Error('Existing session');};
+ await assert.rejects(startOwner(['--task','proof'],deps),/Existing session/);
+ assert.equal(calls.some(x=>x[0]==='cli'||x[0]==='launch'),false);
 });
 
-test('diagnose exit success is never mistaken for proof readiness',async()=>{
- for(const report of [
-  {version:1,ownership:'verified',targets:{status:'blocked',reason:'scope_refused',counts:{permitted_page:1,unsupported_type:2}}},
-  {version:1,ownership:'unknown',targets:{status:'ready',reason:'ready',counts:{permitted_page:1}}},
-  {version:1,ownership:'verified',targets:{status:'ready',reason:'ready',counts:{permitted_page:1,foreign_target:1}}},
-  {version:1,ownership:'verified'},
- ]) {
-  const {deps,calls}=fixtureDeps(report);await assert.rejects(startOwner(['--task','proof'],deps),/blocked|scope/);
+test('upstream success cannot admit the wrong or unselected fixture page',async()=>{
+ for(const pages of ['status: ready','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001.evil/,true','pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,false','pages[2]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true\n  2,https://example.org/,false']) {
+  const {deps,calls}=fixtureDeps(pages);
+  await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
   assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
   assert.equal(calls.filter(x=>x[0]==='closeFixture').length,1);
  }
 });
 
-test('guard startup timeout retains exact Chrome state and never kills or deletes',async()=>{
+test('ownership timeout retains profile and never invokes upstream or deletes resources',async()=>{
  const {deps,calls}=fixtureDeps();let time=1000;deps.now=()=>time;deps.sleep=async()=>{time+=5;};
- const original=deps.guard;deps.guard=(args:any)=>{if(args.includes('diagnose'))throw Object.assign(new Error('owned endpoint unavailable'),{retryable:true});return original(args);};
- let state:any;
- await assert.rejects(startOwner(['--task','proof'],deps),(error:any)=>{state=error.state;return /timeout/.test(error.message);});
- assert.equal(state.pid,12345);assert.equal(state.phase,'blocked');assert.equal(state.receipt,'/registry/new/receipt.json');
+ deps.verifyChrome=()=>{throw Object.assign(new Error('Listener not ready'),{retryable:true});};
+ let state:any;await assert.rejects(startOwner(['--task','proof'],deps),(error:any)=>{state=error.state;return /timeout/.test(error.message);});
+ assert.equal(state.pid,12345);assert.equal(state.phase,'blocked');assert.equal(state.profile,'/private/state/profile');
+ assert.equal(calls.some(x=>x[0]==='cli'),false);
  assert.equal(calls.filter(x=>x[0]==='closeFixture').length,1);
- assert.equal(calls.some(x=>x[0]==='kill'||x[0]==='delete'),false);
 });
 
 test('owner interruption closes only its own synthetic fixture',async()=>{
@@ -113,15 +108,6 @@ test('fixed Chrome spawn isolates signals without unreferencing its owned handle
  assert.equal(invocation.options.detached,true);assert.equal(unreferenced,false);
 });
 
-test('preparation requires a bounded string expiry before any launch',async()=>{
- for(const expires of [[new Date(7201000).toISOString()],new Date(9999999999999).toISOString()]) {
-  const {deps,calls}=fixtureDeps();deps.guard=()=>JSON.stringify({receipt:'/registry/new/receipt.json',profile:'/registry/new/profile',expires});
-  await assert.rejects(startOwner(['--task','proof'],deps),/preparation/);
-  assert.equal(calls.some(x=>x[0]==='launch'),false);
- }
-});
-
-
 test('feature configuration cannot be supplied through the owner CLI',async()=>{
  const {deps,calls}=fixtureDeps();
  for(const extra of [
@@ -147,4 +133,51 @@ test('fixed Chrome spawn rejects absent, arbitrary, duplicate and conflicting fe
   ['--disable-features=PreloadTopChromeWebUI','--enable-features=OtherFeature'],
  ]) assert.throws(()=>launchOwnedChrome([...featureArgs,'about:blank'],{cwd:'/repo',env:{},log:'/must-not-be-opened/chrome.log'},()=>{spawns++;}),/fixed QA feature/i);
  assert.equal(spawns,0);
+});
+
+test('upstream environment binds only fresh named session and explicit owned endpoint',async()=>{
+ const {upstreamEnvironment}=await import('../scripts/qa/chrome-owner.mjs');
+ const env=upstreamEnvironment({PATH:'/bin',CHROME_DEVTOOLS_AXI_AUTO_CONNECT:'1',CHROME_DEVTOOLS_AXI_MCP_SERVER_URL:'https://foreign',CHROME_DEVTOOLS_AXI_USER_DATA_DIR:'/personal'}, {session:'pi41_new',bridgePort:42001,port:42002},'/declared/mcp.js');
+ assert.deepEqual(env,{PATH:'/bin',CHROME_DEVTOOLS_AXI_SESSION:'pi41_new',CHROME_DEVTOOLS_AXI_PORT:'42001',CHROME_DEVTOOLS_AXI_BROWSER_URL:'http://127.0.0.1:42002',CHROME_DEVTOOLS_AXI_MCP_PATH:'/declared/mcp.js'});
+});
+
+test('owned process verification rejects replacement and nonexclusive or nonloopback listeners',async()=>{
+ const {verifyProcess}=await import('../scripts/qa/chrome-owner.mjs');
+ const expected={pid:42,parent:10,uid:501,birth:'Thu Oct 15 12:00:00 2026',command:'/owned/chrome --user-data-dir=/private/task/profile',port:42002};
+ const good={...expected,listener:'p42\nn127.0.0.1:42002'};
+ assert.doesNotThrow(()=>verifyProcess(good,expected));
+ for(const patch of [{pid:43},{parent:99},{uid:502},{birth:'Fri Oct 16 12:00:00 2026'},{command:'/foreign/chrome'},{listener:'p42\nn*:42002'},{listener:'p42\nn127.0.0.1:42002\np99\nn127.0.0.1:42002'},{listener:''}]) assert.throws(()=>verifyProcess({...good,...patch},expected),/identity|listener/);
+});
+
+test('private task profile refuses replacement, symlink and public permissions',async()=>{
+ const {verifyPrivateProfile}=await import('../scripts/qa/chrome-owner.mjs');
+ const {mkdtempSync,mkdirSync,lstatSync,chmodSync,symlinkSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const dir=mkdtempSync(join(tmpdir(),'pi41-profile-test-'));const profile=join(dir,'profile');mkdirSync(profile,{mode:0o700});const inode=lstatSync(profile).ino;
+ try {
+  assert.doesNotThrow(()=>verifyPrivateProfile(profile,inode,process.getuid!()));
+  assert.throws(()=>verifyPrivateProfile(profile,inode+1,process.getuid!()),/profile/);
+  chmodSync(profile,0o755);assert.throws(()=>verifyPrivateProfile(profile,inode,process.getuid!()),/profile/);chmodSync(profile,0o700);
+  symlinkSync(profile,join(dir,'link'));assert.throws(()=>verifyPrivateProfile(join(dir,'link'),inode,process.getuid!()),/profile/);
+ } finally {rmSync(dir,{recursive:true});}
+});
+
+test('real owned Node process and IPv4 socket satisfy OS probe, then fail after exit',{skip:process.platform!=='darwin'},async()=>{
+ const {inspectProcess,verifyProcess}=await import('../scripts/qa/chrome-owner.mjs');const {spawn}=await import('node:child_process');const {once}=await import('node:events');
+ const program="const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port))";
+ const child=spawn(process.execPath,['-e',program],{stdio:['ignore','pipe','pipe']});
+ try {
+  const [line]=await once(child.stdout!,'data');const port=Number(String(line).trim());assert.ok(port>0);
+  const probe=inspectProcess(child.pid!,port);
+  verifyProcess(probe,{pid:child.pid!,parent:process.pid,uid:process.getuid!(),command:`${process.execPath} -e ${program}`,port});
+  assert.match(probe.birth,/^[A-Za-z]{3} [A-Za-z]{3}/);
+  const exited=once(child,'exit');child.kill();await exited;
+  assert.throws(()=>inspectProcess(child.pid!,port));
+ } finally {if(child.exitCode===null&&child.signalCode===null){const done=once(child,'exit');child.kill();await done;}}
+});
+
+test('post-CLI ownership loss prevents readiness and closes only fixture',async()=>{
+ const {deps,calls}=fixtureDeps();let checks=0;deps.verifyChrome=()=>{if(++checks===2)throw new Error('Owned process identity changed');};
+ await assert.rejects(startOwner(['--task','proof'],deps),/identity changed/);
+ assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
+ assert.equal(calls.filter(x=>x[0]==='closeFixture').length,1);
 });
