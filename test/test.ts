@@ -407,7 +407,12 @@ describe("session.ts", () => {
 
   describe("seedSubagentSessionFile", () => {
     it("creates a lineage-only child session with parent linkage and no copied turns", () => {
-      const parentFile = createSessionFile(dir, [SESSION_HEADER, MODEL_CHANGE, USER_MSG, ASSISTANT_MSG]);
+      const parentFile = createSessionFile(dir, [
+        SESSION_HEADER,
+        MODEL_CHANGE,
+        USER_MSG,
+        ASSISTANT_MSG,
+      ]);
       const childFile = join(dir, "lineage-child.jsonl");
 
       seedSubagentSessionFile({
@@ -427,7 +432,12 @@ describe("session.ts", () => {
     });
 
     it("creates a forked child session with copied context before the triggering user turn", () => {
-      const parentFile = createSessionFile(dir, [SESSION_HEADER, MODEL_CHANGE, USER_MSG, ASSISTANT_MSG]);
+      const parentFile = createSessionFile(dir, [
+        SESSION_HEADER,
+        MODEL_CHANGE,
+        USER_MSG,
+        ASSISTANT_MSG,
+      ]);
       const childFile = join(dir, "fork-child.jsonl");
 
       seedSubagentSessionFile({
@@ -446,8 +456,14 @@ describe("session.ts", () => {
       assert.equal(entries[0].parentSession, parentFile);
       assert.equal(entries[0].cwd, "/tmp/fork-child-cwd");
       assert.equal(entries[1].type, "model_change");
-      assert.equal(entries.some((entry) => entry.type === "session" && entry.parentSession !== parentFile), false);
-      assert.equal(entries.some((entry) => entry.type === "message"), false);
+      assert.equal(
+        entries.some((entry) => entry.type === "session" && entry.parentSession !== parentFile),
+        false,
+      );
+      assert.equal(
+        entries.some((entry) => entry.type === "message"),
+        false,
+      );
     });
   });
 
@@ -500,10 +516,7 @@ describe("status.ts", () => {
   it("loads the shared example when local config is absent", () => {
     withTempDir((dir) => {
       const examplePath = join(dir, "config.json.example");
-      writeFileSync(
-        examplePath,
-        JSON.stringify({ status: { enabled: true } }, null, 2) + "\n",
-      );
+      writeFileSync(examplePath, JSON.stringify({ status: { enabled: true } }, null, 2) + "\n");
 
       const config = loadStatusConfig(join(dir, "config.json"), examplePath);
 
@@ -551,10 +564,7 @@ describe("status.ts", () => {
       const configPath = join(dir, "config.json");
       const examplePath = join(dir, "config.json.example");
       writeFileSync(configPath, "{\n");
-      writeFileSync(
-        examplePath,
-        JSON.stringify({ status: { enabled: true } }, null, 2) + "\n",
-      );
+      writeFileSync(examplePath, JSON.stringify({ status: { enabled: true } }, null, 2) + "\n");
 
       assert.throws(
         () => loadStatusConfig(configPath, examplePath),
@@ -575,17 +585,21 @@ describe("status.ts", () => {
 
   it("classifies active snapshots without aging into stalled", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-      latestEvent: "tool_execution_start",
-    }, 5_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+        latestEvent: "tool_execution_start",
+      },
+      5_000,
+    );
 
     const snapshot = classifyStatus(state, 240_000);
     assert.equal(snapshot.kind, "active");
@@ -595,14 +609,18 @@ describe("status.ts", () => {
 
   it("classifies waiting snapshots as healthy idle without becoming stalled", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 1,
-      phase: "waiting",
-      waitingSince: 10_000,
-      latestEvent: "agent_end",
-    }, 10_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 10_000,
+        sequence: 1,
+        phase: "waiting",
+        waitingSince: 10_000,
+        latestEvent: "agent_end",
+      },
+      10_000,
+    );
 
     const snapshot = classifyStatus(state, 240_000);
     assert.equal(snapshot.kind, "waiting");
@@ -625,14 +643,18 @@ describe("status.ts", () => {
     assert.equal(advanced.transition, "stalled");
     assert.equal(advanced.snapshot.kind, "stalled");
 
-    state = observeStatus(advanced.nextState, {
-      snapshot: "present",
-      updatedAt: 96_000,
-      sequence: 1,
-      phase: "waiting",
-      waitingSince: 96_000,
-      latestEvent: "agent_end",
-    }, 96_000);
+    state = observeStatus(
+      advanced.nextState,
+      {
+        snapshot: "present",
+        updatedAt: 96_000,
+        sequence: 1,
+        phase: "waiting",
+        waitingSince: 96_000,
+        latestEvent: "agent_end",
+      },
+      96_000,
+    );
     advanced = advanceStatusState(state, 97_000);
     assert.equal(advanced.transition, "recovered");
     assert.equal(advanced.snapshot.kind, "waiting");
@@ -640,15 +662,19 @@ describe("status.ts", () => {
 
   it("keeps the last healthy kind during transient snapshot loss", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "streaming",
-      activeSince: 5_000,
-    }, 5_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "streaming",
+        activeSince: 5_000,
+      },
+      5_000,
+    );
     state = advanceStatusState(state, 6_000).nextState;
     state = observeStatus(state, { snapshot: "missing" }, 10_000);
 
@@ -660,16 +686,20 @@ describe("status.ts", () => {
   it("forces an active state to waiting after interrupt", () => {
     const now = 20_000;
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+      },
+      5_000,
+    );
 
     assert.equal(classifyStatus(state, now).kind, "active");
 
@@ -684,25 +714,33 @@ describe("status.ts", () => {
 
   it("orders same-millisecond snapshots by sequence", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 10_000,
-      activityLabel: "bash",
-    }, 10_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 10_000,
+        sequence: 2,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 10_000,
+        activityLabel: "bash",
+      },
+      10_000,
+    );
 
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 3,
-      phase: "waiting",
-      waitingSince: 10_000,
-      latestEvent: "agent_end",
-    }, 10_001);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 10_000,
+        sequence: 3,
+        phase: "waiting",
+        waitingSince: 10_000,
+        latestEvent: "agent_end",
+      },
+      10_001,
+    );
 
     const snapshot = classifyStatus(state, 11_000);
     assert.equal(snapshot.kind, "waiting");
@@ -711,29 +749,37 @@ describe("status.ts", () => {
 
   it("recovers from a transient snapshot read failure with the same valid snapshot", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 2,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+      },
+      5_000,
+    );
     state = observeStatus(state, { snapshot: "missing" }, 10_000);
     assert.equal(classifyStatus(state, 10_000).statusLabel, null);
 
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 11_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 2,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+      },
+      11_000,
+    );
 
     const snapshot = classifyStatus(state, 11_000);
     assert.equal(snapshot.kind, "active");
@@ -742,56 +788,72 @@ describe("status.ts", () => {
 
   it("ignores stale and exact old snapshots after interrupt and accepts newer snapshots", () => {
     let state = createStatusState({ source: "pi", startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
+    state = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+      },
+      5_000,
+    );
     state = forceStatusAfterInterrupt(state, 20_000);
 
-    const stale = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 21_000);
+    const stale = observeStatus(
+      state,
+      {
+        snapshot: "present",
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 5_000,
+        activityLabel: "bash",
+      },
+      21_000,
+    );
     let snapshot = classifyStatus(stale, 21_000);
     assert.equal(snapshot.kind, "waiting");
     assert.equal(snapshot.activityLabel, "interrupted");
 
-    const sameTimestamp = observeStatus(stale, {
-      snapshot: "present",
-      updatedAt: 20_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 20_000,
-      activityLabel: "bash",
-    }, 22_000);
+    const sameTimestamp = observeStatus(
+      stale,
+      {
+        snapshot: "present",
+        updatedAt: 20_000,
+        sequence: 1,
+        phase: "active",
+        active: true,
+        activeScope: "tool",
+        activeSince: 20_000,
+        activityLabel: "bash",
+      },
+      22_000,
+    );
     snapshot = classifyStatus(sameTimestamp, 22_000);
     assert.equal(snapshot.kind, "waiting");
     assert.equal(snapshot.activityLabel, "interrupted");
 
-    const resumed = observeStatus(sameTimestamp, {
-      snapshot: "present",
-      sequence: 2,
-      updatedAt: 25_000,
-      phase: "active",
-      active: true,
-      activeScope: "streaming",
-      activeSince: 25_000,
-      activityLabel: "streaming",
-    }, 25_000);
+    const resumed = observeStatus(
+      sameTimestamp,
+      {
+        snapshot: "present",
+        sequence: 2,
+        updatedAt: 25_000,
+        phase: "active",
+        active: true,
+        activeScope: "streaming",
+        activeSince: 25_000,
+        activityLabel: "streaming",
+      },
+      25_000,
+    );
     snapshot = classifyStatus(resumed, 25_000);
     assert.equal(snapshot.kind, "active");
     assert.equal(resumed.activeScope, "streaming");
@@ -819,7 +881,11 @@ describe("status.ts", () => {
       299_000,
     );
     const line = formatStatusLine(longName, classifyStatus(stalledState, 240_000));
-    const recovered = formatTransitionLine(longName, classifyStatus(activeState, 300_000), "recovered");
+    const recovered = formatTransitionLine(
+      longName,
+      classifyStatus(activeState, 300_000),
+      "recovered",
+    );
 
     assert.doesNotMatch(line, /\n/);
     assert.doesNotMatch(recovered, /\n/);
@@ -830,7 +896,13 @@ describe("status.ts", () => {
   it("caps visible status lines and reports overflow consistently", () => {
     const waitingState = observeStatus(
       createStatusState({ source: "pi", startTimeMs: 0 }),
-      { snapshot: "present", updatedAt: 180_000, sequence: 1, phase: "waiting", waitingSince: 180_000 },
+      {
+        snapshot: "present",
+        updatedAt: 180_000,
+        sequence: 1,
+        phase: "waiting",
+        waitingSince: 180_000,
+      },
       180_000,
     );
     const activeState = observeStatus(
@@ -848,8 +920,18 @@ describe("status.ts", () => {
       419_000,
     );
     const waitingLine = formatStatusLine("Worker", classifyStatus(waitingState, 300_000));
-    const recoveredLine = formatTransitionLine("Worker", classifyStatus(activeState, 420_000), "recovered");
-    const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Planner running 6m."];
+    const recoveredLine = formatTransitionLine(
+      "Worker",
+      classifyStatus(activeState, 420_000),
+      "recovered",
+    );
+    const lines = [
+      waitingLine,
+      recoveredLine,
+      "Scout running 2m.",
+      "Reviewer running 4m.",
+      "Planner running 6m.",
+    ];
     const capped = capStatusLines(lines, 3);
     const aggregate = formatStatusAggregate(lines, 3);
 
@@ -918,10 +1000,9 @@ describe("subagent discovery", () => {
       writeAgentFile(
         projectAgentsDir,
         "interactive-unset-test-agent",
-        [
-          "name: interactive-unset-test-agent",
-          "model: anthropic/test-interactive-unset",
-        ].join("\n"),
+        ["name: interactive-unset-test-agent", "model: anthropic/test-interactive-unset"].join(
+          "\n",
+        ),
       );
 
       const loaded = testApi.loadAgentDefaults("interactive-unset-test-agent");
@@ -940,15 +1021,9 @@ describe("subagent discovery", () => {
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: false }),
       true,
     );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, {}),
-      true,
-    );
+    assert.equal(testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, {}), true);
     // Bare spawn with no agent defs (e.g. /iterate fork) is interactive by default.
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null),
-      true,
-    );
+    assert.equal(testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null), true);
   });
 
   it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
@@ -962,10 +1037,7 @@ describe("subagent discovery", () => {
     );
     // Non-auto-exit agent that opts back into stall pings.
     assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { interactive: false },
-      ),
+      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { interactive: false }),
       false,
     );
   });
@@ -1028,7 +1100,10 @@ describe("subagent discovery", () => {
   it("resolves session mode with fork override precedence", () => {
     assert.equal(testApi.resolveEffectiveSessionMode({ name: "A", task: "T" }, null), "standalone");
     assert.equal(
-      testApi.resolveEffectiveSessionMode({ name: "A", task: "T" }, { sessionMode: "lineage-only" }),
+      testApi.resolveEffectiveSessionMode(
+        { name: "A", task: "T" },
+        { sessionMode: "lineage-only" },
+      ),
       "lineage-only",
     );
     assert.equal(
@@ -1093,21 +1168,33 @@ describe("subagent discovery", () => {
 
   it("buildPiPromptArgs inserts separator for artifact-backed launches with skills", () => {
     assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: "review,lint", taskDelivery: "artifact", taskArg: "@artifact.md" }),
+      testApi.buildPiPromptArgs({
+        effectiveSkills: "review,lint",
+        taskDelivery: "artifact",
+        taskArg: "@artifact.md",
+      }),
       ["", "/skill:review", "/skill:lint", "@artifact.md"],
     );
   });
 
   it("buildPiPromptArgs omits separator for artifact-backed launches without skills", () => {
     assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: undefined, taskDelivery: "artifact", taskArg: "@artifact.md" }),
+      testApi.buildPiPromptArgs({
+        effectiveSkills: undefined,
+        taskDelivery: "artifact",
+        taskArg: "@artifact.md",
+      }),
       ["@artifact.md"],
     );
   });
 
   it("buildPiPromptArgs omits separator for direct launches with skills", () => {
     assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: "review", taskDelivery: "direct", taskArg: "do the task" }),
+      testApi.buildPiPromptArgs({
+        effectiveSkills: "review",
+        taskDelivery: "direct",
+        taskArg: "do the task",
+      }),
       ["/skill:review", "do the task"],
     );
   });
@@ -1161,7 +1248,10 @@ describe("subagent discovery", () => {
       const result = await tool.execute();
       const agents = result.details?.agents ?? [];
 
-      assert.equal(agents.some((agent: any) => agent.name === "hidden-discovery-test-agent"), false);
+      assert.equal(
+        agents.some((agent: any) => agent.name === "hidden-discovery-test-agent"),
+        false,
+      );
       assert.doesNotMatch(result.content[0].text, /hidden-discovery-test-agent/);
 
       const loaded = testApi.loadAgentDefaults("hidden-discovery-test-agent");
@@ -1205,7 +1295,10 @@ describe("subagent discovery", () => {
       const result = await tool.execute();
       const agents = result.details?.agents ?? [];
 
-      assert.equal(agents.some((agent: any) => agent.name === "shadowed-discovery-test-agent"), false);
+      assert.equal(
+        agents.some((agent: any) => agent.name === "shadowed-discovery-test-agent"),
+        false,
+      );
       assert.doesNotMatch(result.content[0].text, /shadowed-discovery-test-agent/);
 
       const loaded = testApi.loadAgentDefaults("shadowed-discovery-test-agent");
@@ -1229,7 +1322,9 @@ describe("subagent-done.ts", () => {
 
   describe("shouldAutoExitOnAgentEnd", () => {
     it("leaves the conversation alive when native Pi reports Escape as an operation-aborted error", () => {
-      const messages = [{ role: "assistant", stopReason: "error", errorMessage: "This operation was aborted" }];
+      const messages = [
+        { role: "assistant", stopReason: "error", errorMessage: "This operation was aborted" },
+      ];
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
     });
 
@@ -1303,14 +1398,11 @@ describe("cmux.ts interpretExitSidecar", () => {
   const { interpretExitSidecar } = __pollForExitTest__;
 
   it("decodes ping payloads", () => {
-    assert.deepEqual(
-      interpretExitSidecar({ type: "ping", name: "Worker", message: "need help" }),
-      {
-        reason: "ping",
-        exitCode: 0,
-        ping: { name: "Worker", message: "need help" },
-      },
-    );
+    assert.deepEqual(interpretExitSidecar({ type: "ping", name: "Worker", message: "need help" }), {
+      reason: "ping",
+      exitCode: 0,
+      ping: { name: "Worker", message: "need help" },
+    });
   });
 
   it("decodes done payloads", () => {
@@ -1613,7 +1705,10 @@ describe("subagent interruption", () => {
 
     (subagentsModule as any).default(api);
 
-    assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), true);
+    assert.equal(
+      registeredTools.some((tool) => tool.name === "subagent_interrupt"),
+      true,
+    );
   });
 
   it("resolves interrupt targets by exact id and reports name ambiguity", () => {
@@ -1622,9 +1717,18 @@ describe("subagent interruption", () => {
     runningMap.clear();
 
     try {
-      runningMap.set("a1", makeRunning({ id: "a1", name: "Worker", surface: "a1", sessionFile: "a1.jsonl" }));
-      runningMap.set("b2", makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }));
-      runningMap.set("c3", makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }));
+      runningMap.set(
+        "a1",
+        makeRunning({ id: "a1", name: "Worker", surface: "a1", sessionFile: "a1.jsonl" }),
+      );
+      runningMap.set(
+        "b2",
+        makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }),
+      );
+      runningMap.set(
+        "c3",
+        makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }),
+      );
 
       const byId = testApi.resolveInterruptTarget({ id: "c3", name: "Worker" });
       assert.equal(byId.running.id, "c3");
@@ -1679,9 +1783,11 @@ describe("subagent interruption", () => {
     try {
       runningMap.set("a1", makeRunning({ statusState: activeState }));
 
-      const result = withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, () => {
-        throw new Error("mux write failed");
-      }));
+      const result = withMockedNow(20_000, () =>
+        testApi.handleSubagentInterrupt({ name: "Worker" }, () => {
+          throw new Error("mux write failed");
+        }),
+      );
 
       assert.match(result.content[0].text, /Failed to send Escape/);
       assert.equal(classifyStatus(runningMap.get("a1").statusState, 20_000).kind, "active");
@@ -1740,14 +1846,19 @@ describe("subagent interruption", () => {
       writeFileSync(activityFile, `${JSON.stringify(activity)}\n`);
 
       try {
-        runningMap.set("a1", makeRunning({
-          activityFile,
-          statusState: createStatusState({ source: "pi", startTimeMs: 0 }),
-        }));
+        runningMap.set(
+          "a1",
+          makeRunning({
+            activityFile,
+            statusState: createStatusState({ source: "pi", startTimeMs: 0 }),
+          }),
+        );
 
-        withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-          sentSurface = surface;
-        }));
+        withMockedNow(20_000, () =>
+          testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
+            sentSurface = surface;
+          }),
+        );
 
         assert.equal(sentSurface, "pane-1");
         const state = runningMap.get("a1").statusState;
@@ -1787,9 +1898,11 @@ describe("subagent interruption", () => {
     try {
       runningMap.set("a1", makeRunning({ statusState: activeState }));
 
-      const result = withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-        sentSurface = surface;
-      }));
+      const result = withMockedNow(20_000, () =>
+        testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
+          sentSurface = surface;
+        }),
+      );
 
       assert.equal(sentSurface, "pane-1");
       assert.equal(result.content[0].text, 'Interrupt requested for subagent "Worker".');
@@ -1914,7 +2027,9 @@ describe("subagent status renderer", () => {
     const { api, registeredMessageRenderers } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
+    const rendererEntry = registeredMessageRenderers.find(
+      (entry) => entry.name === "subagent_status",
+    );
     assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
 
     const visibleLines = [
@@ -1948,7 +2063,9 @@ describe("subagent status renderer", () => {
     const { api, registeredMessageRenderers } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
+    const rendererEntry = registeredMessageRenderers.find(
+      (entry) => entry.name === "subagent_status",
+    );
     assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
 
     const rendered = rendererEntry.renderer(
@@ -2012,35 +2129,38 @@ describe("subagents widget rendering", () => {
     const originalNow = Date.now;
     Date.now = () => 1_000_000;
     try {
-      const lines = testApi.renderSubagentWidgetLines([
-        {
-          id: "a1",
-          name: "A",
-          task: "",
-          surface: "s1",
-          startTime: 1_000_000 - 13_000,
-          sessionFile: "sess1",
-          statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 13_000 }),
-        },
-        {
-          id: "a2",
-          name: "B",
-          task: "",
-          surface: "s2",
-          startTime: 1_000_000 - 21_000,
-          sessionFile: "sess2",
-          statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 21_000 }),
-        },
-        {
-          id: "a3",
-          name: "C",
-          task: "",
-          surface: "s3",
-          startTime: 1_000_000 - 27_000,
-          sessionFile: "sess3",
-          statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 27_000 }),
-        },
-      ], 16);
+      const lines = testApi.renderSubagentWidgetLines(
+        [
+          {
+            id: "a1",
+            name: "A",
+            task: "",
+            surface: "s1",
+            startTime: 1_000_000 - 13_000,
+            sessionFile: "sess1",
+            statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 13_000 }),
+          },
+          {
+            id: "a2",
+            name: "B",
+            task: "",
+            surface: "s2",
+            startTime: 1_000_000 - 21_000,
+            sessionFile: "sess2",
+            statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 21_000 }),
+          },
+          {
+            id: "a3",
+            name: "C",
+            task: "",
+            surface: "s3",
+            startTime: 1_000_000 - 27_000,
+            sessionFile: "sess3",
+            statusState: createStatusState({ source: "pi", startTimeMs: 1_000_000 - 27_000 }),
+          },
+        ],
+        16,
+      );
 
       assert.deepEqual(
         lines.map((line: string) => visibleWidth(line)),
@@ -2068,17 +2188,20 @@ describe("subagents widget rendering", () => {
     const widths = [0, 1, 2];
     for (const width of widths) {
       const startTime = Date.now() - 5_000;
-      const lines = testApi.renderSubagentWidgetLines([
-        {
-          id: "a1",
-          name: "A",
-          task: "",
-          surface: "s1",
-          startTime,
-          sessionFile: "sess1",
-          statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
-        },
-      ], width);
+      const lines = testApi.renderSubagentWidgetLines(
+        [
+          {
+            id: "a1",
+            name: "A",
+            task: "",
+            surface: "s1",
+            startTime,
+            sessionFile: "sess1",
+            statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
+          },
+        ],
+        width,
+      );
 
       for (const line of lines) {
         assert.ok(
@@ -2152,11 +2275,15 @@ describe("cmux.ts", () => {
 
     it("returns null when focused is absent or not an object", () => {
       assert.equal(
-        parseCmuxFocusedSnapshotFromJson('{"focused":null,"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}'),
+        parseCmuxFocusedSnapshotFromJson(
+          '{"focused":null,"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
+        ),
         null,
       );
       assert.equal(
-        parseCmuxFocusedSnapshotFromJson('{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}'),
+        parseCmuxFocusedSnapshotFromJson(
+          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
+        ),
         null,
       );
     });

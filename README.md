@@ -494,6 +494,28 @@ export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm
 
 ---
 
+## Development validation
+
+Use Node 22.19 or newer and the repository's npm lockfile:
+
+```sh
+npm ci
+npm run typecheck
+npm run lint
+npm run format:check
+npm test
+```
+
+The development SDK aliases resolve the existing `@mariozechner` imports to the exact Pi 1.1.0 `@earendil-works` packages, using the same namespace compatibility mapping as Pi's loader.
+The public runtime imports and peer dependency names remain compatible with existing installations.
+The Pi package family is pinned together because mixing the 1.1 SDK with 1.2 sibling packages breaks its public module exports.
+These published declarations validate the pinned upstream release; locally patched installed SDK declarations require a separate provenance check.
+TypeScript strictly checks extensions and all TypeScript tests against that SDK.
+JavaScript helpers are imported for their inferred public types and covered by Oxc and runtime tests; their implementations are not strictly typechecked.
+Oxc is the only lint and formatting toolchain.
+`npm run format` formats handwritten code and configuration; Markdown and the generated lockfile are excluded.
+`npm run test:integration` additionally needs the documented live multiplexer environment and is separate from deterministic validation.
+
 ## Acknowledgements
 
 The sub-agent status supervision and turn-only interruption features were inspired by [RepoPrompt](https://repoprompt.com/)'s sub-agent snapshot polling and run cancellation features.

@@ -28,8 +28,10 @@ export function shouldAutoExitOnAgentEnd(
       if (msg?.role === "assistant") {
         // Pi 1.1.0 reports Escape during an active tool as this exact error.
         // Preserve the interruption contract without treating other errors as aborts.
-        return msg.stopReason !== "aborted" &&
-          !(msg.stopReason === "error" && msg.errorMessage === "This operation was aborted");
+        return (
+          msg.stopReason !== "aborted" &&
+          !(msg.stopReason === "error" && msg.errorMessage === "This operation was aborted")
+        );
       }
     }
   }
@@ -51,9 +53,7 @@ export interface SubagentErrorInfo {
  * Returns `null` when the latest assistant turn completed normally or was
  * aborted by the user (handled separately by shouldAutoExitOnAgentEnd).
  */
-export function findLatestAssistantError(
-  messages: any[] | undefined,
-): SubagentErrorInfo | null {
+export function findLatestAssistantError(messages: any[] | undefined): SubagentErrorInfo | null {
   if (!messages) return null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -61,7 +61,8 @@ export function findLatestAssistantError(
     if (msg.stopReason !== "error") return null;
     const raw = typeof msg.errorMessage === "string" ? msg.errorMessage.trim() : "";
     return {
-      errorMessage: raw || "Subagent agent loop ended with stopReason=error (no errorMessage field).",
+      errorMessage:
+        raw || "Subagent agent loop ended with stopReason=error (no errorMessage field).",
       stopReason: "error",
     };
   }
@@ -289,7 +290,9 @@ export default function (pi: ExtensionAPI) {
 
       ctx.shutdown();
       return {
-        content: [{ type: "text", text: "Ping sent. Session will exit and parent will be notified." }],
+        content: [
+          { type: "text", text: "Ping sent. Session will exit and parent will be notified." },
+        ],
         details: {},
       };
     },
