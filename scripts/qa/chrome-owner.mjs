@@ -6,7 +6,8 @@ import {createServer as createNetServer} from 'node:net';
 import {homedir,tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-const CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_APP=join(homedir(),'Applications/Google Chrome for Testing.app');
+const CHROME=join(CHROME_APP,'Contents/MacOS/Google Chrome for Testing');
 // Fixed application-QA configuration; never inferred target admission.
 const QA_FEATURE_FLAG='--disable-features=PreloadTopChromeWebUI';
 
@@ -148,7 +149,11 @@ function productionDependencies() {
     preflight(){
       if(execute('/usr/bin/git',['rev-parse','--show-toplevel']).trim()!==cwd) throw new Error('Use physical Git root');
       for(const path of [cli,mcp,CHROME,'/bin/ps','/usr/sbin/lsof'])accessSync(path,constants.X_OK);
-      execute('/usr/bin/codesign',['--verify','-R','=anchor apple generic and identifier "com.google.Chrome" and certificate leaf[subject.OU] = "EQHXZ8M8AV"','/Applications/Google Chrome.app']);
+      const app=realpathSync(CHROME_APP);
+      const store=dirname(dirname(app));
+      if(!/^\/nix\/store\/[a-z0-9]{32}-chrome-for-testing-/.test(store))throw new Error('Use the declared Nix-owned Chrome for Testing app');
+      execute('/nix/var/nix/profiles/default/bin/nix-store',['--verify-path',store],process.env,30000);
+      if(execute('/usr/libexec/PlistBuddy',['-c','Print :CFBundleIdentifier',join(app,'Contents/Info.plist')]).trim()!=='com.google.chrome.for.testing')throw new Error('Dedicated Chrome app identity mismatch');
       const args=['--session',process.env.HERDR_SESSION];
       const pane=JSON.parse(execute(herdr,[...args,'pane','current','--current'])).result?.pane;
       const info=JSON.parse(execute(herdr,[...args,'pane','process-info','--current'])).result?.process_info;

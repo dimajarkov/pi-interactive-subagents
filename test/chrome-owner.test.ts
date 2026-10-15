@@ -1,5 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {homedir} from 'node:os';
+import {join} from 'node:path';
 import {startOwner} from '../scripts/qa/chrome-owner.mjs';
 
 test('invalid owner admission cannot allocate or launch a browser', async () => {
@@ -105,7 +107,7 @@ test('fixed Chrome spawn isolates signals without unreferencing its owned handle
  const dir=mkdtempSync(join(tmpdir(),'pi-owner-spawn-test-'));let invocation:any;let unreferenced=false;
  const handle={pid:23456,once(){return this;},unref(){unreferenced=true;}};
  const result=launchOwnedChrome(['--disable-features=PreloadTopChromeWebUI','about:blank'],{cwd:'/repo',env:{},log:join(dir,'chrome.log')},(file:any,args:any,options:any)=>{invocation={file,args,options};return handle;});
- assert.equal(result,handle);assert.equal(invocation.file,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+ assert.equal(result,handle);assert.equal(invocation.file,join(homedir(),'Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'));
  assert.equal(invocation.options.detached,true);assert.equal(unreferenced,false);
 });
 

@@ -16,9 +16,9 @@ env -u NODE_OPTIONS -u NODE_PATH node scripts/qa/chrome-owner.mjs --task pi41-br
 ```
 
 The helper accepts only `--task`, refusing arbitrary URLs, executables, existing profiles and inherited browser/backend overrides.
-It requires macOS, installed stable Google Chrome, the existing public CLI and npm-owned Chrome DevTools MCP installation, `/bin/ps`, `/usr/sbin/lsof` and `/opt/homebrew/bin/herdr`.
+It requires macOS, the Nix-owned `~/Applications/Google Chrome for Testing.app`, the existing public CLI and npm-owned Chrome DevTools MCP installation, `/bin/ps`, `/usr/sbin/lsof` and `/opt/homebrew/bin/herdr`.
 Missing prerequisites fail without substitution or installation.
-Initial preflight verifies physical Git root, Chrome's vendor signature and the current ordinary Herdr foreground placement.
+Initial preflight verifies physical Git root, the testing app's Nix store integrity and distinct bundle identity and the current ordinary Herdr foreground placement.
 This placement check is not a replacement for the removed browser guard or an upstream caller-binding mechanism.
 
 The helper creates a new private task directory and empty disposable profile, plus a fresh synthetic HTTP fixture bound only to `127.0.0.1`.
@@ -124,3 +124,13 @@ The owner closed only its fixture and retained its resources; no root Computer U
 The current helper omits that unnecessary CLI control step because this proof uses root-native window acquisition instead of later page-scoped CDP operations.
 The root must still freshly verify the actual owned window, URL, title and pixels before interaction.
 The retained failed run is historical evidence and cannot be reused as a fresh proof.
+
+## Native app selection
+
+The owner launches Chrome for Testing with bundle ID `com.google.chrome.for.testing`, distinct from regular Chrome's `com.google.Chrome`.
+Root selects the exact testing app path through Computer Use and verifies this run's synthetic URL and token before input.
+Bundle-ID-only selection is insufficient when cached testing builds share that identifier.
+Keep one native Computer Use proof active against the testing app at a time.
+The dotfiles Nix package pins Google's official archive by version and SHA256; the owner verifies the resulting Nix store path.
+This official testing archive is ad-hoc signed, so it is not checked against regular Chrome's vendor signing certificate.
+Browser evidence establishes the observed Chrome for Testing configuration.
