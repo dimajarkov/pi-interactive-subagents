@@ -75,7 +75,8 @@ export class HerdrParent {
         done = true;
         clearTimeout(timer);
         socket.destroy();
-        error ? reject(error) : resolve(result);
+        if (error) reject(error);
+        else resolve(result);
       };
       const timer = setTimeout(
         () =>

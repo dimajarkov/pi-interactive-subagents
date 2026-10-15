@@ -50,7 +50,7 @@ test('native denial is preserved in the waiting Pi call', async () => {
 test('expired host and cancelled Pi request fail closed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-cu-expired-'));
   const binding = { task: 'synthetic-qa', session: 'pi-session', checkout: realpathSync('.'), role: 'visual-tester', target: 'synthetic-preview', hostThread: 'codex-thread' };
-  const host = openVisualHost(dir, binding, 1);
+  openVisualHost(dir, binding, 1);
   await new Promise(resolve => setTimeout(resolve, 5));
   await assert.rejects(requestVisualObservation(dir, binding, 'Observe'), /stale/);
   const second = mkdtempSync(join(tmpdir(), 'pi-cu-cancel-'));

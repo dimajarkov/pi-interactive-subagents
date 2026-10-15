@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {once} from 'node:events';
 import {startOwner} from '../scripts/qa/chrome-owner.mjs';
 
 test('invalid owner admission cannot allocate or launch a browser', async () => {
@@ -16,7 +16,7 @@ test('invalid owner admission cannot allocate or launch a browser', async () => 
   assert.equal(effects,0);
 });
 
-function fixtureDeps(pages='pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true') {
+function fixtureDeps(pages: string | ((args: any) => string)='pages[1]{id,url,selected}:\n  1,http://127.0.0.1:41001/,true') {
  const calls:any[]=[];let port=41001;
  const deps:any={platform:'darwin',env:{HERDR_ENV:'1',HERDR_SESSION:'handovers'},cwd:'/repo',sourceRoot:'/repo',now:()=>1000,
   preflight(){return {workspace:'w1'};},createState(){return {directory:'/private/state',profile:'/private/state/profile',token:'UNIQUE_TOKEN',session:'pi41_unique'};},
@@ -165,7 +165,7 @@ test('private task profile refuses replacement, symlink and public permissions',
 });
 
 test('real owned Node process and IPv4 socket satisfy OS probe, then fail after exit',{skip:process.platform!=='darwin'},async()=>{
- const {inspectProcess,verifyProcess}=await import('../scripts/qa/chrome-owner.mjs');const {spawn}=await import('node:child_process');const {once}=await import('node:events');
+ const {inspectProcess,verifyProcess}=await import('../scripts/qa/chrome-owner.mjs');const {spawn}=await import('node:child_process');
  const program="const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port))";
  const child=spawn(process.execPath,['-e',program],{stdio:['ignore','pipe','pipe']});
  try {

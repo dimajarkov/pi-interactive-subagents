@@ -84,6 +84,7 @@ export function verifyHerdrCaller(pane,info,env,cwd,pid) {
 }
 
 /** Test injection is import-only; CLI uses fixed spawn and executable. */
+/** @param {(file: string, args: string[], options: import("node:child_process").SpawnOptions) => any} spawnImpl */
 export function launchOwnedChrome(args,options,spawnImpl=spawn) {
   const featureControls=args.filter(arg=>arg.startsWith('--disable-features')||arg.startsWith('--enable-features'));
   if(featureControls.length!==1||featureControls[0]!==QA_FEATURE_FLAG) throw new Error('Chrome owner requires the single fixed QA feature control');

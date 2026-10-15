@@ -54,6 +54,8 @@ export default function herdrControl(pi: ControlSDK): void {
       ctx.ui?.notify("Herdr control failure sidecar could not be written; initialization still stops.", "error");
     } finally {
       try { ctx.ui?.notify(message, "error"); }
+      // Shutdown must run even when notification fails; missing shutdown fails closed.
+      // oxlint-disable-next-line no-unsafe-finally
       finally { if (typeof ctx.shutdown !== "function") throw new Error("Native public shutdown capability unavailable"); ctx.shutdown(); }
     }
   };
