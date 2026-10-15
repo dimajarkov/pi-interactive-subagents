@@ -48,7 +48,10 @@ zellij --session pi   # then run: pi
 # just run pi inside WezTerm — no wrapper needed
 ```
 
-Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm` to force a specific backend.
+Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specific backend.
+The Herdr fork requires a verified managed Herdr caller and its supported runtime; see [failure safety](docs/herdr-failure-safety.md).
+The upstream installer above selects HazAT's repository; immutable deployment of this fork is a separate dotfiles integration step.
+See [the upstream compatibility record](docs/herdr-upstream-compatibility.md) for actual backend coverage and limitations.
 
 If your shell startup is slow and subagent commands sometimes get dropped before the prompt is ready, set `PI_SUBAGENT_SHELL_READY_DELAY_MS` to a higher value (defaults to `500`):
 
@@ -62,7 +65,7 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 ### Extensions
 
-**Subagents** — 4 main-session tools + 3 commands, plus 1 subagent-only tool:
+**Subagents** - 4 main-session tools + 3 commands, plus 2 child-only tools (`caller_ping` and `subagent_done`):
 
 | Tool                 | Description                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------- |
@@ -79,13 +82,13 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 ### Bundled Agents
 
-| Agent             | Model                  | Role                                                                                     |
-| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| **planner**       | Opus (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
-| **scout**         | Haiku                  | Fast codebase reconnaissance — maps files, patterns, conventions                         |
-| **worker**        | Sonnet                 | Implements tasks from todos — writes code, runs tests, makes polished commits            |
-| **reviewer**      | Opus (medium thinking) | Reviews code for bugs, security issues, correctness                                      |
-| **visual-tester** | Sonnet                 | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
+| Agent | Model and thinking | Role |
+| --- | --- | --- |
+| **planner** | `openai-codex/gpt-6-astra`, medium | Clarifies requirements, explores approaches, writes plans and todos |
+| **scout** | `openai-codex/gpt-6.1-sol`, medium | Maps files, patterns and conventions |
+| **worker** | `openai-codex/gpt-6.1-sol`, medium | Implements todos, runs tests and commits |
+| **reviewer** | `openai-codex/gpt-6.1-sol`, medium | Reviews correctness and security |
+| **visual-tester** | `openai-codex/gpt-6.1-sol`, medium | Requests actual observations from the active Codex app's normal Computer Use route |
 
 Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`) > **package-bundled**. Override any bundled agent by placing your own version in the higher-priority location.
 
@@ -490,6 +493,28 @@ export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm
 ```
 
 ---
+
+## Development validation
+
+Use Node 22.19 or newer and the repository's npm lockfile:
+
+```sh
+npm ci
+npm run typecheck
+npm run lint
+npm run format:check
+npm test
+```
+
+The development SDK aliases resolve the existing `@mariozechner` imports to the exact Pi 1.1.0 `@earendil-works` packages, using the same namespace compatibility mapping as Pi's loader.
+The public runtime imports and peer dependency names remain compatible with existing installations.
+The Pi package family is pinned together because mixing the 1.1 SDK with 1.2 sibling packages breaks its public module exports.
+These published declarations validate the pinned upstream release; locally patched installed SDK declarations require a separate provenance check.
+TypeScript strictly checks extensions and all TypeScript tests against that SDK.
+JavaScript helpers are imported for their inferred public types and covered by Oxc and runtime tests; their implementations are not strictly typechecked.
+Oxc is the only lint and formatting toolchain.
+`npm run format` formats handwritten code and configuration; Markdown and the generated lockfile are excluded.
+`npm run test:integration` additionally needs the documented live multiplexer environment and is separate from deterministic validation.
 
 ## Acknowledgements
 
