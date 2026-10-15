@@ -48,7 +48,10 @@ zellij --session pi   # then run: pi
 # just run pi inside WezTerm — no wrapper needed
 ```
 
-Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm` to force a specific backend.
+Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specific backend.
+The Herdr fork requires a verified managed Herdr caller and its supported runtime; see [failure safety](docs/herdr-failure-safety.md).
+The upstream installer above selects HazAT's repository; immutable deployment of this fork is a separate dotfiles integration step.
+See [the upstream compatibility record](docs/herdr-upstream-compatibility.md) for actual backend coverage and limitations.
 
 If your shell startup is slow and subagent commands sometimes get dropped before the prompt is ready, set `PI_SUBAGENT_SHELL_READY_DELAY_MS` to a higher value (defaults to `500`):
 
@@ -62,7 +65,7 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 ### Extensions
 
-**Subagents** — 4 main-session tools + 3 commands, plus 1 subagent-only tool:
+**Subagents** - 4 main-session tools + 3 commands, plus 2 child-only tools (`caller_ping` and `subagent_done`):
 
 | Tool                 | Description                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------- |
@@ -79,13 +82,13 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 ### Bundled Agents
 
-| Agent             | Model                  | Role                                                                                     |
-| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| **planner**       | Opus (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
-| **scout**         | Haiku                  | Fast codebase reconnaissance — maps files, patterns, conventions                         |
-| **worker**        | Sonnet                 | Implements tasks from todos — writes code, runs tests, makes polished commits            |
-| **reviewer**      | Opus (medium thinking) | Reviews code for bugs, security issues, correctness                                      |
-| **visual-tester** | Sonnet                 | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
+| Agent | Model and thinking | Role |
+| --- | --- | --- |
+| **planner** | `openai-codex/gpt-6-astra`, medium | Clarifies requirements, explores approaches, writes plans and todos |
+| **scout** | `openai-codex/gpt-6.1-sol`, medium | Maps files, patterns and conventions |
+| **worker** | `openai-codex/gpt-6.1-sol`, medium | Implements todos, runs tests and commits |
+| **reviewer** | `openai-codex/gpt-6.1-sol`, medium | Reviews correctness and security |
+| **visual-tester** | `openai-codex/gpt-6.1-sol`, medium | Requests actual observations from the active Codex app's normal Computer Use route |
 
 Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`) > **package-bundled**. Override any bundled agent by placing your own version in the higher-priority location.
 
