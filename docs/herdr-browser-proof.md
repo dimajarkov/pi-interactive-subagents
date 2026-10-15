@@ -44,7 +44,7 @@ The private profile's inode, type, ownership and permissions must remain unchang
 Missing, malformed, stale, foreign or ambiguous evidence fails closed.
 These are checks of this runtime's own resources, not a generic browser-target allowlist or an OS security sandbox.
 
-The owner invokes only the public CLI's `pages` command with a source-constructed environment:
+The owner invokes the public CLI's `pages` command and, when needed, `selectpage` for the discovered exact fixture ID, with a source-constructed environment:
 
 - `CHROME_DEVTOOLS_AXI_SESSION` selects the newly allocated named session.
 - `CHROME_DEVTOOLS_AXI_PORT` selects its reserved bridge port.
@@ -56,7 +56,11 @@ Upstream launches its own detached bridge as its supported implementation.
 The repository owner keeps Chrome and the fixture foreground-owned; there is no custom foreground attach-bridge command.
 
 Exit zero, bridge health and a named session alone are insufficient for readiness.
-The public page inventory must contain exactly the selected synthetic fixture page at its exact URL.
+The initial page inventory must contain exactly the synthetic fixture page at its exact URL and a valid numeric page ID.
+Upstream reports `selected:false` in a fresh named session until that session explicitly selects a page.
+For that initial state, the owner rechecks ownership, invokes public `selectpage` only for the discovered fixture ID, discards its snapshot output, and reads `pages` again.
+Readback must confirm the same page ID and exact URL with `selected:true`; selection success alone is insufficient.
+Ownership is checked before and after selection and readback.
 Chrome ownership is rechecked after the public command, and the new bridge's recorded PID, UID, start identity, command and exclusive loopback listener are checked.
 While foreground, the owner monitors those original process/profile/listener identities and closes the fixture on loss.
 It does not navigate or inspect unrelated pages or reconstruct the deleted browser UI target rejection policy.
@@ -87,7 +91,7 @@ The separate Chrome signal group prevents owner interruption from signaling Chro
 Closing the fixture ends this proof even if a rendered page remains visible.
 Retiring exact resources requires separate current ownership verification and scope.
 
-Tests exercise admission, fresh-session sequencing, fixed launch/environment, exact selected fixture matching, ownership failure, profile changes, interruption retention and the synthetic HTTP boundary.
+Tests exercise admission, fresh-session sequencing, fixed launch/environment, fresh-session selection and unchanged-ID/URL readback, ownership failure, profile changes, interruption retention and the synthetic HTTP boundary.
 A real newly spawned Node process and IPv4 listener exercise macOS process/socket parsing without launching a browser.
 Test adapters are import-only and cannot be selected by production CLI or environment.
 Source/mock and Node process/socket evidence do not establish successful Chrome isolation or native permissions.

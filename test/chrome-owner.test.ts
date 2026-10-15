@@ -22,7 +22,7 @@ function fixtureDeps(pages='pages[1]{id,url,selected}:\n  1,http://127.0.0.1:410
   prepareProfile(){calls.push(['profile']);},assertFreshSession(){calls.push(['freshSession']);},
   launchChrome(args:any){calls.push(['launch',args]);return {pid:12345};},
   verifyChrome(){calls.push(['verifyChrome']);},verifyBridge(){calls.push(['verifyBridge']);},
-  cli(args:any,state:any){calls.push(['cli',args,state.session]);return pages;},
+  cli(args:any,state:any){calls.push(['cli',args,state.session]);return typeof pages==='function'?pages(args):pages;},
   save(state:any){calls.push(['save',state.phase]);},sleep:async()=>{},timeoutMs:1,
  };return {deps,calls};
 }
@@ -180,4 +180,29 @@ test('post-CLI ownership loss prevents readiness and closes only fixture',async(
  await assert.rejects(startOwner(['--task','proof'],deps),/identity changed/);
  assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
  assert.equal(calls.filter(x=>x[0]==='closeFixture').length,1);
+});
+
+// Installed upstream overlaySessionSelected reports false until this fresh session selects an id.
+test('fresh upstream session explicitly selects its sole fixture and confirms routing',async()=>{
+ let reads=0;const {deps,calls}=fixtureDeps((args:any)=>args[0]==='pages'?`pages[1]{id,url,selected}:\n  0,http://127.0.0.1:41001/,${++reads>1}`:'snapshot discarded');
+ const owner=await startOwner(['--task','proof'],deps);
+ assert.equal(owner.state.phase,'ready');
+ assert.deepEqual(calls.filter(x=>x[0]==='cli').map(x=>x[1]),[['pages'],['selectpage','0'],['pages']]);
+ const selection=calls.findIndex(x=>x[0]==='cli'&&x[1][0]==='selectpage');
+ assert.ok(calls.slice(0,selection).some(x=>x[0]==='verifyChrome'));
+ assert.ok(calls.slice(0,selection).some(x=>x[0]==='verifyBridge'));
+ assert.ok(calls.slice(selection+1).some(x=>x[0]==='verifyChrome'));
+});
+
+test('fresh discovery rejects malformed ids before selection and changed selected readback',async()=>{
+ for(const id of ['-1','1x','9007199254740992']){
+  const {deps,calls}=fixtureDeps(`pages[1]{id,url,selected}:\n  ${id},http://127.0.0.1:41001/,false`);
+  await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
+  assert.equal(calls.some(x=>x[0]==='cli'&&x[1][0]==='selectpage'),false);
+ }
+ for(const row of ['2,http://127.0.0.1:41001/,true','1,http://127.0.0.1:41001/other,true','1,http://127.0.0.1:41001/,false']) {
+  let reads=0;const {deps,calls}=fixtureDeps((args:any)=>args[0]==='pages'?`pages[1]{id,url,selected}:\n  ${++reads===1?'1,http://127.0.0.1:41001/,false':row}`:'snapshot discarded');
+  await assert.rejects(startOwner(['--task','proof'],deps),/fixture page/);
+  assert.equal(calls.some(x=>x[0]==='save'&&x[1]==='ready'),false);
+ }
 });

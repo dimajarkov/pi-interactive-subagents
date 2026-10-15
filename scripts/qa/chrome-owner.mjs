@@ -45,9 +45,17 @@ export async function startOwner(argv, deps) {
     }
     deps.assertFreshSession(state);
     const pages=deps.cli(['pages'],state);
-    verifyFixturePage(pages,`${state.origin}/`);
+    const page=verifyFixturePage(pages,`${state.origin}/`,false);
     deps.verifyChrome(state);
     deps.verifyBridge(state);
+    if(!page.selected){
+      // A fresh upstream session has no routing selection, even if Chrome displays this page.
+      deps.cli(['selectpage',String(page.id)],state); // Upstream snapshot output is discarded.
+      deps.verifyChrome(state);deps.verifyBridge(state);
+      const selected=verifyFixturePage(deps.cli(['pages'],state),`${state.origin}/`);
+      if(selected.id!==page.id)throw new Error('Synthetic fixture page id changed after selection');
+      deps.verifyChrome(state);deps.verifyBridge(state);
+    }
     state.phase='ready';deps.save(state);
     let closed=false;
     return {state,recheck:()=>{if(state.phase!=='ready'||state.chromeExited)throw new Error('Owned proof is no longer live');deps.verifyChrome(state);deps.verifyBridge(state);},closeFixture:async()=>{if(closed)return;closed=true;await fixture.close();state.phase='retained';deps.save(state);}};
@@ -88,10 +96,12 @@ export function launchOwnedChrome(args,options,spawnImpl=spawn) {
   } finally {closeSync(log);}
 }
 
-export function verifyFixturePage(output,url) {
+export function verifyFixturePage(output,url,requireSelected=true) {
   const lines=String(output).split('\n');
   const header=lines.findIndex(line=>line==='pages[1]{id,url,selected}:');
-  if(header<0 || !/^  [0-9]+,/.test(lines[header+1]||'') || lines[header+1].replace(/^  [0-9]+,/, '')!==`${url},true` || /^  [0-9]+,/.test(lines[header+2]||'')) throw new Error('Exact selected synthetic fixture page is unverified');
+  const row=header<0?null:(lines[header+1]||'').match(/^  ([0-9]+),(.+),(true|false)$/);
+  if(!row||!Number.isSafeInteger(Number(row[1]))||row[2]!==url||(requireSelected&&row[3]!=='true')||/^  [0-9]+,/.test(lines[header+2]||'')) throw new Error('Exact selected synthetic fixture page is unverified');
+  return {id:Number(row[1]),selected:row[3]==='true'};
 }
 
 export function upstreamEnvironment(env,state,mcpPath) {
