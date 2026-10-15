@@ -493,7 +493,7 @@ export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm
 
 ## Development validation
 
-Use Node 24 and the repository's npm lockfile:
+Use Node 22.19 or newer and the repository's npm lockfile:
 
 ```sh
 npm ci

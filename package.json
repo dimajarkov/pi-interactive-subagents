@@ -13,7 +13,7 @@
   },
   "type": "module",
   "scripts": {
-    "test": "node --test test/test.ts test/herdr.test.ts test/public-customization.test.ts test/herdr-failures.test.ts test/computer-use.test.ts test/chrome-owner.test.ts test/herdr-control.test.ts test/herdr-parent.test.ts test/backend-parity.test.ts",
+    "test": "node --test test/*.test.ts test/test.ts",
     "test:integration": "node --test --test-concurrency=1 test/integration/*.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint pi-extension scripts test",
