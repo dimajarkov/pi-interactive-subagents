@@ -174,7 +174,10 @@ test("malformed creation never guesses a child target", () => {
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  assert.deepEqual(newCalls.map((args) => args[1]), ["layout", "split"]);
+  assert.deepEqual(
+    newCalls.map((args) => args[1]),
+    ["layout", "split"],
+  );
 });
 
 test("changing Herdr session refuses an old owned handle", () => {

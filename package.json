@@ -20,16 +20,6 @@
     "format:check": "oxfmt --check .",
     "format": "oxfmt ."
   },
-  "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
-    "@sinclair/typebox": "*"
-  },
-  "pi": {
-    "extensions": [
-      "./pi-extension/subagents/index.ts"
-    ]
-  },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@1.1.0",
     "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@1.1.0",
@@ -39,6 +29,11 @@
     "oxlint": "1.88.0",
     "typescript": "7.0.2"
   },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
   "overrides": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-agent-core": "1.1.0",
@@ -47,5 +42,10 @@
     "@earendil-works/pi-mcp": "1.1.0",
     "@earendil-works/pi-telemetry": "1.1.0",
     "@earendil-works/pi-tui": "1.1.0"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-extension/subagents/index.ts"
+    ]
   }
 }

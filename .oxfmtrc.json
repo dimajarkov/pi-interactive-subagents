@@ -1,8 +1,4 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": [
-    "node_modules/**",
-    "package-lock.json",
-    "**/*.md"
-  ]
+  "ignorePatterns": ["node_modules/**", "package-lock.json", "**/*.md"]
 }

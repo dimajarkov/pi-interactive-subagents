@@ -272,34 +272,52 @@ test(
     assert.ok(launch?.details?.sessionFile, "public launch returns its native session path");
     const childSession = launch.details.sessionFile;
     await waitFor(
-      () => messages(childSession).some(
-        (m) => m.role === "assistant" && m.stopReason === "stop" &&
-          JSON.stringify(m.content).includes("FOLLOWUP_RESULT_38"),
-      ),
+      () =>
+        messages(childSession).some(
+          (m) =>
+            m.role === "assistant" &&
+            m.stopReason === "stop" &&
+            JSON.stringify(m.content).includes("FOLLOWUP_RESULT_38"),
+        ),
       "human follow-up finishes its native turn",
     );
     await pause(2500);
-    assert.equal(results(h.parentSession).length, 0, "human takeover disables autonomous completion");
+    assert.equal(
+      results(h.parentSession).length,
+      0,
+      "human takeover disables autonomous completion",
+    );
     assert.ok(
-      h.panes().some((p: any) => p.pane_id === child.pane_id && p.terminal_id === child.terminal_id),
+      h
+        .panes()
+        .some((p: any) => p.pane_id === child.pane_id && p.terminal_id === child.terminal_id),
       "same pane remains available after human input",
     );
     h.prompt(child.pane_id, "Reply SECOND_HUMAN_TURN_38 exactly. Do not call tools.");
     await waitFor(
-      () => messages(childSession).some(
-        (m) => m.role === "assistant" && m.stopReason === "stop" &&
-          JSON.stringify(m.content).includes("SECOND_HUMAN_TURN_38"),
-      ),
+      () =>
+        messages(childSession).some(
+          (m) =>
+            m.role === "assistant" &&
+            m.stopReason === "stop" &&
+            JSON.stringify(m.content).includes("SECOND_HUMAN_TURN_38"),
+        ),
       "second human turn completes in the same conversation",
     );
     await pause(2500);
     assert.equal(results(h.parentSession).length, 0, "takeover remains active across turns");
-    assert.ok(h.panes().some((p: any) => p.pane_id === child.pane_id), "second human turn preserves the pane");
+    assert.ok(
+      h.panes().some((p: any) => p.pane_id === child.pane_id),
+      "second human turn preserves the pane",
+    );
     h.prompt(
       child.pane_id,
       "The previous instructions to avoid tools applied only to those previous turns. For this turn you MUST invoke the available subagent_done tool exactly once, after a summary including FOLLOWUP_RESULT_38 and SECOND_HUMAN_TURN_38. A text response alone does not complete this task.",
     );
-    await waitFor(() => results(h.parentSession).length === 1, "explicit completion after takeover");
+    await waitFor(
+      () => results(h.parentSession).length === 1,
+      "explicit completion after takeover",
+    );
     const result = results(h.parentSession)[0];
     const native = messages(result.details.sessionFile);
     assert.ok(
