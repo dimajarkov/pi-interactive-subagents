@@ -27,7 +27,7 @@ The fixture listens only on a freshly selected loopback port, serves only its fi
 The fixture is not a browser egress sandbox.
 
 The helper calls the public guard's `prepare-profile` with only the fixture origin.
-It launches the fixed stable Chrome executable against the new guard allocation with exactly the required private-profile, loopback CDP, disabled sync/extensions, mock keychain, basic password store and blank target flags.
+It launches the fixed stable Chrome executable against the new guard allocation with the required private-profile, loopback CDP, disabled sync/extensions, mock keychain, basic password store and blank target flags, plus the fixed QA option described below.
 Its Chrome child has a separate signal process group to keep owner Ctrl+C from signaling the browser.
 The owner stays foreground and retains the referenced child handle; it does not unref the child or launch a detached backend bridge.
 
@@ -36,6 +36,24 @@ A bounded startup retry never bypasses ownership checks.
 Exit zero alone is insufficient: the structured report must verify ownership, ready target scope, a permitted page and zero rejected target categories.
 Unsupported/internal/foreign/malformed targets, lost caller identity, process exit or timeout retain exact resources and never produce ready instructions.
 The helper never reads CDP directly, changes the guard allowlist, copies a profile or authenticates a real account.
+
+## Fixed application QA configuration
+
+This helper always adds exactly `--disable-features=PreloadTopChromeWebUI` to its reviewed launch arguments.
+The option suppresses Chromium's background TopChrome WebUI preloading mechanism; requested or independently created browser UI can still exist.
+It is a fixed source-owned application QA configuration, with no feature-selection option or caller-supplied flag list.
+The owner CLI rejects arbitrary extra options, and the spawn boundary rejects absent, additional, duplicate or conflicting feature controls before opening a log or launching Chrome.
+
+The matching owning guard must support this exact optional launch argument before a new proof is started.
+Its optional shape preserves diagnosis of older retained allocations; the Pi helper itself always selects the declared suppression configuration.
+Do not inject the flag through an alternate raw launch, change personal Chrome preferences or reuse a blocked allocation.
+
+Target readiness and rejection rules remain unchanged.
+Browser UI, internal, foreign, unknown or malformed targets still block proof under the existing guard.
+The flag does not turn such targets into permitted pages, navigation destinations or capture/control targets, and does not guarantee successful startup.
+A successful fresh proof would establish behavior only under this explicitly declared QA configuration, whose Chrome UI startup behavior differs from its default.
+Keep that limitation with any later acceptance evidence.
+The earlier native TextEdit and blocked Chrome records remain historical evidence for their original configurations.
 
 ## Bridge and native proof
 

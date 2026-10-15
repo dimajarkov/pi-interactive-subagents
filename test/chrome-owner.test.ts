@@ -31,7 +31,7 @@ test('owned launch uses only fresh preparation and the exact vendor isolation ar
  const {deps,calls}=fixtureDeps();const owner=await startOwner(['--task','proof'],deps);
  assert.equal(owner.state.phase,'ready');
  assert.deepEqual(calls.find(x=>x[0]==='guard')[1],['--repo-qa','proof','prepare-profile','--target','http://127.0.0.1:41001']);
- assert.deepEqual(calls.find(x=>x[0]==='launch')[1],['--user-data-dir=/registry/new/profile','--remote-debugging-port=41002','--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check','about:blank']);
+ assert.deepEqual(calls.find(x=>x[0]==='launch')[1],['--user-data-dir=/registry/new/profile','--remote-debugging-port=41002','--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check','--disable-features=PreloadTopChromeWebUI','about:blank']);
  assert.deepEqual(calls.filter(x=>x[0]==='guard')[1][1],['--repo-qa','proof','attach','/registry/new/receipt.json','--pid','12345','--port','41002','diagnose']);
 });
 
@@ -108,7 +108,7 @@ test('fixed Chrome spawn isolates signals without unreferencing its owned handle
  const {mkdtempSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
  const dir=mkdtempSync(join(tmpdir(),'pi-owner-spawn-test-'));let invocation:any;let unreferenced=false;
  const handle={pid:23456,once(){return this;},unref(){unreferenced=true;}};
- const result=launchOwnedChrome(['about:blank'],{cwd:'/repo',env:{},log:join(dir,'chrome.log')},(file:any,args:any,options:any)=>{invocation={file,args,options};return handle;});
+ const result=launchOwnedChrome(['--disable-features=PreloadTopChromeWebUI','about:blank'],{cwd:'/repo',env:{},log:join(dir,'chrome.log')},(file:any,args:any,options:any)=>{invocation={file,args,options};return handle;});
  assert.equal(result,handle);assert.equal(invocation.file,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
  assert.equal(invocation.options.detached,true);assert.equal(unreferenced,false);
 });
@@ -119,4 +119,32 @@ test('preparation requires a bounded string expiry before any launch',async()=>{
   await assert.rejects(startOwner(['--task','proof'],deps),/preparation/);
   assert.equal(calls.some(x=>x[0]==='launch'),false);
  }
+});
+
+
+test('feature configuration cannot be supplied through the owner CLI',async()=>{
+ const {deps,calls}=fixtureDeps();
+ for(const extra of [
+  ['--disable-features=PreloadTopChromeWebUI'],
+  ['--disable-features=OtherFeature'],
+  ['--disable-features=PreloadTopChromeWebUI,OtherFeature'],
+  ['--disable-features=PreloadTopChromeWebUI','--disable-features=PreloadTopChromeWebUI'],
+  ['--disable-features=PreloadTopChromeWebUI','--enable-features=PreloadTopChromeWebUI'],
+ ]) await assert.rejects(startOwner(['--task','proof',...extra],deps),/task|option/i);
+ assert.equal(calls.length,0,'reject caller feature overrides before allocation or launch');
+});
+
+test('fixed Chrome spawn rejects absent, arbitrary, duplicate and conflicting feature controls',async()=>{
+ const {launchOwnedChrome}=await import('../scripts/qa/chrome-owner.mjs');
+ let spawns=0;
+ for(const featureArgs of [
+  [],
+  ['--disable-features=OtherFeature'],
+  ['--disable-features=PreloadTopChromeWebUI,OtherFeature'],
+  ['--disable-features=PreloadTopChromeWebUI','--disable-features=PreloadTopChromeWebUI'],
+  ['--disable-features=PreloadTopChromeWebUI','--enable-features=PreloadTopChromeWebUI'],
+  ['--disable-features','PreloadTopChromeWebUI'],
+  ['--disable-features=PreloadTopChromeWebUI','--enable-features=OtherFeature'],
+ ]) assert.throws(()=>launchOwnedChrome([...featureArgs,'about:blank'],{cwd:'/repo',env:{},log:'/must-not-be-opened/chrome.log'},()=>{spawns++;}),/fixed QA feature/i);
+ assert.equal(spawns,0);
 });

@@ -7,6 +7,8 @@ import {homedir,tmpdir} from 'node:os';
 import {basename,dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// Fixed application-QA configuration; never inferred target admission.
+const QA_FEATURE_FLAG='--disable-features=PreloadTopChromeWebUI';
 
 export async function startOwner(argv, deps) {
   if (argv.length !== 2 || argv[0] !== '--task' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(argv[1] || '')) throw new Error('Only --task <fresh bounded task> is supported');
@@ -27,7 +29,7 @@ export async function startOwner(argv, deps) {
     deps.validateAllocation(preparation);
     Object.assign(state,preparation);
     state.phase='allocated';deps.save(state);
-    const chrome=deps.launchChrome([`--user-data-dir=${state.profile}`,`--remote-debugging-port=${state.port}`,'--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check','about:blank'],state);
+    const chrome=deps.launchChrome([`--user-data-dir=${state.profile}`,`--remote-debugging-port=${state.port}`,'--remote-debugging-address=127.0.0.1','--disable-sync','--disable-extensions','--use-mock-keychain','--password-store=basic','--no-first-run','--no-default-browser-check',QA_FEATURE_FLAG,'about:blank'],state);
     if(!Number.isSafeInteger(chrome.pid)||chrome.pid<1) throw new Error('Owned Chrome process failed to start');
     state.pid=chrome.pid;state.phase='launched';deps.save(state);
     const attach=['--repo-qa',task,'attach',state.receipt,'--pid',String(state.pid),'--port',String(state.port)];
@@ -78,6 +80,8 @@ export function verifyHerdrCaller(pane,info,env,cwd,pid) {
 
 /** Test injection is import-only; CLI uses fixed spawn and executable. */
 export function launchOwnedChrome(args,options,spawnImpl=spawn) {
+  const featureControls=args.filter(arg=>arg.startsWith('--disable-features')||arg.startsWith('--enable-features'));
+  if(featureControls.length!==1||featureControls[0]!==QA_FEATURE_FLAG) throw new Error('Chrome owner requires the single fixed QA feature control');
   const log=openSync(options.log,'wx',0o600);
   try {
     // Separate signal group prevents owner Ctrl+C reaching Chrome. Keep handle referenced.
