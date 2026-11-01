@@ -42,6 +42,8 @@ function host() {
     getAllTools() {
       return [...tools.values()];
     },
+    getActiveTools: () => [...tools.keys()],
+    setActiveTools() {},
   };
   return { api, tools, commands, renderers, events, shortcuts, messages };
 }
@@ -559,4 +561,47 @@ test("direct spawn, full-context iterate and all planning phases retain public w
     assert.match(plan, /name: "Review: Reviewer"/);
     assert.match(plan, /Always run workers sequentially/);
     assert.match(plan, /Build the requested feature$/);
+  }));
+
+test("a child's explicit denial removes a built-in tool from the model's active tools", async () =>
+  isolated(() => {
+    process.env.PI_DENY_TOOLS = "bash";
+    const h = host();
+    let active = ["read", "bash", "subagent_done"];
+    h.api.getActiveTools = () => [...active];
+    h.api.setActiveTools = (names: string[]) => {
+      active = names;
+    };
+    childExtension(h.api);
+    for (const fn of h.events.get("session_start") ?? [])
+      fn({}, { sessionManager: { getSessionId: () => "restricted" }, ui: { setWidget() {} } });
+    assert.deepEqual(active, ["read", "subagent_done"]);
+  }));
+
+test("missing native policy enforcement shuts down and blocks input even when event errors are swallowed", async () =>
+  isolated(() => {
+    process.env.PI_DENY_TOOLS = "bash";
+    const h = host();
+    delete h.api.getActiveTools;
+    delete h.api.setActiveTools;
+    let shutdowns = 0;
+    childExtension(h.api);
+    const ctx = {
+      shutdown: () => shutdowns++,
+      sessionManager: { getSessionId: () => "unsupported-policy" },
+      ui: { setWidget() {}, notify() {} },
+    };
+    for (const fn of h.events.get("session_start") ?? []) {
+      try {
+        fn({}, ctx);
+      } catch {
+        /* Native runner reports errors and continues other handlers. */
+      }
+    }
+    assert.equal(shutdowns, 1, "startup refusal requires an actual native shutdown");
+    const input = (h.events.get("input") ?? []).map((fn) => fn({ text: "must not execute" }, ctx));
+    assert.ok(
+      input.some((result) => result?.action === "handled"),
+      "a swallowed handler error cannot pass the initial task to a model",
+    );
   }));

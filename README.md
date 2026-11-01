@@ -213,7 +213,11 @@ The `caller_ping` tool lets a subagent request help from its parent agent. When 
 - `sessionPath` (required): Path to the child session `.jsonl` file
 - `name` (optional): Display name for the resumed pane (defaults to `Resume`)
 - `message` (optional): Follow-up prompt to send after resuming
-- `autoExit` (optional): Whether the resumed session should auto-exit after its next response. Defaults to `true` for autonomous follow-up work; set `false` when resuming for an interactive handoff.
+- `autoExit` (optional): Whether the resumed session should auto-exit after its next response. Defaults to the original saved role policy; set `true` for autonomous follow-up work or `false` for an interactive handoff.
+
+Managed resume restores the original effective policy and requires the original immediate parent's native lineage.
+Concurrent, foreign, legacy or unresolved executions are refused before pane allocation.
+See [native session policy and recovery](docs/herdr-recovery.md) for private receipts, same-session reload and the manual recovery boundary.
 
 **Interaction flow:**
 1. Child calls `caller_ping({ message: "Not sure which schema to use" })`

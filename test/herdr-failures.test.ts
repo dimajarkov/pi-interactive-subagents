@@ -2,7 +2,15 @@ import { EventEmitter } from "node:events";
 import net from "node:net";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  appendFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -264,19 +272,35 @@ test("a missing job status retains cleanup uncertainty without retrying another 
     );
   }));
 
+async function completedSession(h: any) {
+  h.configure({ fail: null });
+  const started = await spawn(h);
+  appendFileSync(
+    started.details.sessionFile,
+    JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "ORIGINAL_COMPLETION" }] },
+    }) + "\n",
+  );
+  writeFileSync(started.details.exitFile, JSON.stringify({ type: "done" }));
+  await result(h);
+  h.messages.splice(0);
+  return started;
+}
+
 test("completed child summary survives protected cleanup rejection and no close retry is issued", async () =>
   fixture(async (h) => {
     h.configure({ fail: "close" });
     const started = await spawn(h);
     const session = started.details.sessionFile;
-    writeFileSync(
+    appendFileSync(
       session,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "CHILD_RESULT_42" }] },
       }) + "\n",
     );
-    writeFileSync(session + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(started.details.exitFile, JSON.stringify({ type: "done" }));
     const m = await result(h);
     assert.match(m.content, /CHILD_RESULT_42/);
     assert.match(m.content, /cleanup.*protected_close/i);
@@ -294,12 +318,10 @@ test("direct launch rejection allocates no child and never guesses a cleanup tar
 
 test("resume direct launch rejection never closes the original session pane", async () =>
   fixture(async (h) => {
+    const previous = await completedSession(h);
+    const sessionPath = previous.details.sessionFile;
+    const closesBefore = h.calls().filter((a: string[]) => a[1] === "close").length;
     h.configure({ fail: "run" });
-    const sessionPath = join(h.dir, "resume.jsonl");
-    writeFileSync(
-      sessionPath,
-      JSON.stringify({ type: "session", id: "resume", version: 3 }) + "\n",
-    );
     await assert.rejects(
       () =>
         h.tools
@@ -309,7 +331,10 @@ test("resume direct launch rejection never closes the original session pane", as
     );
     assert.deepEqual(
       h.calls().filter((a: string[]) => a[1] === "close"),
-      [],
+      h
+        .calls()
+        .filter((a: string[]) => a[1] === "close")
+        .slice(0, closesBefore),
     );
   }));
 
@@ -333,14 +358,14 @@ test("a sidecar arriving during terminal read failure wins over the read error",
   fixture(async (h) => {
     h.configure({ fail: null });
     const started = await spawn(h);
-    writeFileSync(
+    appendFileSync(
       started.details.sessionFile,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "LATE_RESULT_42" }] },
       }) + "\n",
     );
-    h.configure({ fail: "read", lateSidecar: started.details.sessionFile + ".exit" });
+    h.configure({ fail: "read", lateSidecar: started.details.exitFile });
     const m = await result(h);
     assert.match(m.content, /LATE_RESULT_42/);
     assert.equal(m.details.exitCode, 1);
@@ -353,14 +378,14 @@ test("parallel child failure and completion keep independent ownership and resul
     const first = await spawn(h);
     const second = await spawn(h);
     assert.notEqual(first.details.sessionFile, second.details.sessionFile);
-    writeFileSync(
+    appendFileSync(
       second.details.sessionFile,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "SECOND_CHILD_RESULT_42" }] },
       }) + "\n",
     );
-    writeFileSync(second.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(second.details.exitFile, JSON.stringify({ type: "done" }));
     const end = Date.now() + 2500;
     while (
       h.messages.filter((m: any) => m.customType === "subagent_result").length < 2 &&
@@ -390,13 +415,11 @@ test("existing zoom refuses background launch before creating or changing layout
 
 test("resumed completion preserves new summary and cleanup rejection in its parent notification", async () =>
   fixture(async (h) => {
+    const previous = await completedSession(h);
+    const sessionPath = previous.details.sessionFile;
+    const closesBefore = h.calls().filter((a: string[]) => a[1] === "close").length;
     h.configure({ fail: "close" });
-    const sessionPath = join(h.dir, "resume-complete.jsonl");
-    writeFileSync(
-      sessionPath,
-      JSON.stringify({ type: "session", id: "resume", version: 3 }) + "\n",
-    );
-    await h.tools
+    const resumed = await h.tools
       .get("subagent_resume")
       .execute("resume", { sessionPath, name: "ResumeCleanup" }, undefined, undefined, h.ctx);
     writeFileSync(
@@ -408,11 +431,11 @@ test("resumed completion preserves new summary and cleanup rejection in its pare
         }) +
         "\n",
     );
-    writeFileSync(sessionPath + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(resumed.details.exitFile, JSON.stringify({ type: "done" }));
     const m = await result(h);
     assert.match(m.content, /RESUMED_RESULT_42/);
     assert.match(m.content, /cleanup.*protected_close/i);
-    assert.equal(h.calls().filter((a: string[]) => a[1] === "close").length, 1);
+    assert.equal(h.calls().filter((a: string[]) => a[1] === "close").length - closesBefore, 1);
   }));
 
 test("unavailable exact specialist models fail before creating a child and never substitute parent defaults", async () =>
@@ -567,20 +590,18 @@ test("same-session resume does not consume a previous managed child completion",
   fixture(async (h) => {
     h.configure({ fail: null });
     const first = await spawn(h);
-    writeFileSync(
+    appendFileSync(
       first.details.sessionFile,
-      JSON.stringify({ type: "session", id: "native-original", version: 3 }) +
-        "\n" +
-        JSON.stringify({
-          type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "FIRST_COMPLETION" }] },
-        }) +
-        "\n",
+      JSON.stringify({
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "FIRST_COMPLETION" }] },
+      }) + "\n",
     );
-    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(first.details.exitFile, JSON.stringify({ type: "done" }));
     await result(h);
     h.messages.splice(0);
-    await h.tools.get("subagent_resume").execute(
+    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    const resumed = await h.tools.get("subagent_resume").execute(
       "resume",
       {
         sessionPath: first.details.sessionFile,
@@ -606,7 +627,7 @@ test("same-session resume does not consume a previous managed child completion",
         }) +
         "\n",
     );
-    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(resumed.details.exitFile, JSON.stringify({ type: "done" }));
     const second = await result(h);
     assert.match(second.content, /SECOND_COMPLETION/);
     assert.equal(second.details.exitCode, 0);

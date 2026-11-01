@@ -384,3 +384,32 @@ test("a launch connection failure before dispatch allocates no phantom child or 
       false,
     );
   }));
+
+test("a new execution ignores old native completion receipts and consumes only its own sidecar", () =>
+  fixture(async (h) => {
+    const job = await h.client.launch({
+      name: "Resumed",
+      cwd: h.dir,
+      scriptPath: join(h.dir, "child.sh"),
+      command: "pi",
+    });
+    const nativeFile = join(h.dir, "native.jsonl");
+    const oldExit = nativeFile + ".exit";
+    const freshExit = nativeFile + ".fresh-execution.exit";
+    writeFileSync(oldExit, JSON.stringify({ type: "done" }));
+    writeFileSync(
+      freshExit,
+      JSON.stringify({ type: "error", errorMessage: "FRESH_EXECUTION_ERROR" }),
+    );
+    const result = await h.client.poll(
+      job.condition,
+      nativeFile,
+      new AbortController().signal,
+      undefined,
+      freshExit,
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.errorMessage, "FRESH_EXECUTION_ERROR");
+    assert.equal(existsSync(freshExit), false);
+    assert.equal(existsSync(oldExit), true, "old receipt is retained as native recovery evidence");
+  }));

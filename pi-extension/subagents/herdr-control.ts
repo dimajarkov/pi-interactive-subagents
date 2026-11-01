@@ -1,3 +1,11 @@
+import {
+  claimControlReload,
+  createControlReload,
+  hasControlReload,
+  controlSessionFile,
+  type ControlReload,
+} from "./control-reload.ts";
+import { ownExitFile } from "./recovery.ts";
 /** Cooperative control for explicitly managed Herdr jobs.
  * This is a structural facade of the dotfiles-patched native public Pi SDK.
  * Unmanaged children and generic multiplexers never open a control route.
@@ -16,7 +24,7 @@ export interface NativeScope extends NativeRequest {
   readonly requests?: readonly NativeRequest[];
 }
 export interface ControlContext {
-  sessionManager: { getSessionId(): string };
+  sessionManager: { getSessionId(): string; getSessionFile?(): string | null | undefined };
   getUserRequest?: () => NativeScope | undefined;
   getUserRequestPreparation?: () => NativeRequest | undefined;
   isIdle(): boolean;
@@ -73,17 +81,35 @@ export default function herdrControl(pi: ControlSDK): void {
   delete process.env.HERDR_CONTROL_CAPABILITY;
   delete process.env.HERDR_CONTROL_VERSION;
   delete process.env.HERDR_CONTROL_SOCKET;
-  if (!capability && !version && !path) return;
+  if (!capability && !version && !path) {
+    if (hasControlReload())
+      pi.on("session_start", (event, ctx) => {
+        if (event.reason === "reload") return claimControlReload(pi, ctx, event);
+      });
+    return;
+  }
+  const reload = createControlReload(pi);
+  registerControl(reload.sdk, capability, version, path, reload);
+}
+
+function registerControl(
+  pi: ControlSDK,
+  capability: string | undefined,
+  version: string | undefined,
+  path: string | undefined,
+  reload: ControlReload,
+): void {
   let startupFailed = false;
   pi.on("input", () => (startupFailed ? { action: "handled" } : { action: "continue" }));
   const failStartup = (ctx: ControlContext, detail: string): void => {
     startupFailed = true;
+    reload.dispose();
     const message = `Herdr managed control initialization failed: ${detail}`;
     try {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
       if (sessionFile)
         writeFileSync(
-          `${sessionFile}.exit`,
+          ownExitFile(sessionFile),
           JSON.stringify({ type: "error", errorMessage: message, stopReason: "error" }),
         );
     } catch {
@@ -117,21 +143,40 @@ export default function herdrControl(pi: ControlSDK): void {
     start?: (event: any, ctx: ControlContext) => void;
     end?: (event: any, ctx: ControlContext) => void;
     observe?: () => void;
+    quiescent?: () => boolean;
+    sessionFile?: string | null;
   }
   let route: Binding | undefined;
   let binding: Binding | undefined;
+  let awaitingReload = false;
   function invalidate(message?: string): void {
     const owned = route;
     route = undefined;
+    reload.dispose();
     if (owned) {
+      const notify = owned.accepting;
       owned.accepting = false;
       owned.pending = undefined;
       owned.socket.destroy();
-      if (message)
+      if (message && notify)
         owned.ctx.ui?.notify(`Herdr cooperative control unavailable: ${message}`, "error");
     }
   }
-  pi.on("session_shutdown", () => {
+  reload.onExit(() => invalidate());
+  pi.on("session_shutdown", (event) => {
+    if (
+      event.reason === "reload" &&
+      route === binding &&
+      binding?.condition &&
+      typeof binding.sessionFile === "string" &&
+      binding.sessionFile.length > 0 &&
+      binding.quiescent?.()
+    ) {
+      binding.accepting = false;
+      awaitingReload = true;
+      reload.quiesce({ session: binding.session, file: binding.sessionFile });
+      return;
+    }
     invalidate();
     binding = undefined;
   });
@@ -146,8 +191,30 @@ export default function herdrControl(pi: ControlSDK): void {
   pi.on("user_request_prepare", () => binding?.observe?.());
   pi.on("user_request_prepare_end", () => binding?.observe?.());
   pi.on("agent_settled", () => binding?.observe?.());
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     if (attempted) {
+      const owned = binding;
+      if (
+        awaitingReload &&
+        event.reason === "reload" &&
+        owned &&
+        route === owned &&
+        !owned.socket.destroyed &&
+        ctx.sessionManager.getSessionId() === owned.session &&
+        controlSessionFile(ctx) === owned.sessionFile &&
+        typeof ctx.getUserRequest === "function" &&
+        typeof ctx.getUserRequestPreparation === "function" &&
+        typeof ctx.isIdle === "function" &&
+        typeof ctx.hasPendingMessages === "function" &&
+        typeof ctx.abort === "function" &&
+        typeof ctx.shutdown === "function"
+      ) {
+        owned.ctx = ctx;
+        owned.accepting = true;
+        awaitingReload = false;
+        owned.observe?.();
+        return;
+      }
       invalidate();
       return;
     }
@@ -176,13 +243,27 @@ export default function herdrControl(pi: ControlSDK): void {
       failStartup(ctx, "native session identity unavailable");
       return;
     }
+    let nativeFile: string | null | undefined;
+    try {
+      nativeFile = controlSessionFile(ctx);
+    } catch {
+      failStartup(ctx, "native session file identity is unavailable");
+      return;
+    }
     const epoch = randomBytes(32).toString("hex");
     const socket = net.createConnection(path);
-    const owned: Binding = { socket, session, epoch, ctx, accepting: true };
+    const owned: Binding = {
+      socket,
+      session,
+      epoch,
+      ctx,
+      accepting: true,
+      sessionFile: nativeFile,
+    };
     binding = owned;
     route = owned;
     const live = () =>
-      route === owned && owned.accepting && ctx.sessionManager.getSessionId() === session;
+      route === owned && owned.accepting && owned.ctx.sessionManager.getSessionId() === session;
     const write = (frame: object): void => {
       if (!live()) return;
       const bytes = Buffer.from(JSON.stringify(frame) + "\n");
@@ -230,13 +311,23 @@ export default function herdrControl(pi: ControlSDK): void {
       });
     const used = new Set<string>();
     const aborts = new Map<string, { id: string; accepted: boolean; outcome?: string }>();
+    owned.quiescent = () =>
+      !!owned.condition &&
+      owned.accepting &&
+      !owned.pending &&
+      !aborts.size &&
+      owned.socket.writableLength === 0 &&
+      !owned.ctx.getUserRequest?.() &&
+      !owned.ctx.getUserRequestPreparation?.() &&
+      owned.ctx.isIdle() &&
+      !owned.ctx.hasPendingMessages();
     let sequence = 0;
     let activeScope: string | undefined;
     const endedScopes = new Set<string>();
     const members = (scope: NativeScope): readonly NativeRequest[] => scope.requests ?? [scope];
     owned.observe = () => {
       if (!live() || !owned.condition) return;
-      const currentScope = ctx.getUserRequest?.();
+      const currentScope = owned.ctx.getUserRequest?.();
       const scope = currentScope && !endedScopes.has(currentScope.id) ? currentScope : undefined;
       write({
         id: randomUUID(),
@@ -248,9 +339,9 @@ export default function herdrControl(pi: ControlSDK): void {
           native_request_ids: scope ? members(scope).map((r) => r.id) : [],
           busy:
             !!scope ||
-            !!ctx.getUserRequestPreparation?.() ||
-            !ctx.isIdle() ||
-            ctx.hasPendingMessages(),
+            !!owned.ctx.getUserRequestPreparation?.() ||
+            !owned.ctx.isIdle() ||
+            owned.ctx.hasPendingMessages(),
         },
       });
     };
@@ -374,7 +465,7 @@ export default function herdrControl(pi: ControlSDK): void {
       }
       used.add(frame.id);
       if (frame.method === "agent.control.abort") {
-        const scope = ctx.getUserRequest?.();
+        const scope = owned.ctx.getUserRequest?.();
         if (
           !identifier(params.native_request_id) ||
           !Number.isInteger(params.deadline_ms) ||
@@ -393,7 +484,7 @@ export default function herdrControl(pi: ControlSDK): void {
         // Recheck at the public abort boundary, never infer identity from text or agent kind.
         if (
           !live() ||
-          ctx.getUserRequest?.()?.id !== scope.id ||
+          owned.ctx.getUserRequest?.()?.id !== scope.id ||
           activeScope !== scope.id ||
           endedScopes.has(scope.id)
         ) {
@@ -407,7 +498,7 @@ export default function herdrControl(pi: ControlSDK): void {
         };
         aborts.set(scope.id, operation);
         try {
-          const completion = ctx.abort();
+          const completion = owned.ctx.abort();
           operation.accepted = true;
           ack(frame.id, "accepted", scope.id);
           if (operation.outcome) finishAbort(scope.id, operation.outcome);
@@ -436,10 +527,10 @@ export default function herdrControl(pi: ControlSDK): void {
       }
       if (
         owned.pending ||
-        ctx.getUserRequest?.() ||
-        ctx.getUserRequestPreparation?.() ||
-        !ctx.isIdle() ||
-        ctx.hasPendingMessages()
+        owned.ctx.getUserRequest?.() ||
+        owned.ctx.getUserRequestPreparation?.() ||
+        !owned.ctx.isIdle() ||
+        owned.ctx.hasPendingMessages()
       ) {
         ack(frame.id, "rejected", undefined, "native request busy or preparing");
         return;
@@ -494,6 +585,7 @@ export default function herdrControl(pi: ControlSDK): void {
       });
       socket.on("data", (chunk) => {
         if (!live()) {
+          invalidate();
           socket.destroy();
           finish();
           return;

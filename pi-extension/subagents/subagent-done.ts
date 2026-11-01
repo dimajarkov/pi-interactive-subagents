@@ -1,3 +1,4 @@
+import { ownExitFile } from "./recovery.ts";
 import {
   outstandingDelegation,
   delegationExitRefusal,
@@ -86,6 +87,7 @@ export default function (pi: ExtensionAPI) {
   let toolNames: string[] = [];
   let denied: string[] = [];
   let expanded = false;
+  let policyFailed = false;
 
   // Read subagent identity from env vars (set by parent orchestrator)
   const subagentName = process.env.PI_SUBAGENT_NAME ?? "";
@@ -154,14 +156,36 @@ export default function (pi: ExtensionAPI) {
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
     recorder.sessionStart();
-    const tools = pi.getAllTools();
-    toolNames = tools.map((t) => t.name).sort();
     denied = parseDeniedTools(deniedToolsValue);
+    if (denied.length) {
+      try {
+        if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function")
+          throw new Error("Native active-tool policy API required to enforce child denials");
+        pi.setActiveTools(pi.getActiveTools().filter((name) => !denied.includes(name)));
+      } catch (error) {
+        policyFailed = true;
+        try {
+          ctx.ui?.notify?.(
+            `Child policy could not be enforced; execution stopped: ${String(error)}`,
+            "error",
+          );
+        } finally {
+          ctx.shutdown();
+        }
+        return;
+      }
+    }
+    const tools = pi.getAllTools();
+    toolNames = tools
+      .map((t) => t.name)
+      .filter((name) => !denied.includes(name))
+      .sort();
 
     renderWidget(ctx, null);
   });
 
   pi.on("input", () => {
+    if (policyFailed) return { action: "handled" };
     recorder.input();
     // Ignore the initial task message that starts an autonomous subagent.
     // Only inputs after the first agent run has started count as user takeover.
@@ -196,7 +220,7 @@ export default function (pi: ExtensionAPI) {
       if (errorInfo && sessionFile) {
         try {
           writeFileSync(
-            `${sessionFile}.exit`,
+            ownExitFile(sessionFile),
             JSON.stringify({
               type: "error",
               errorMessage: errorInfo.errorMessage,
@@ -302,7 +326,7 @@ export default function (pi: ExtensionAPI) {
         name: process.env.PI_SUBAGENT_NAME ?? "subagent",
         message: params.message,
       };
-      writeFileSync(`${sessionFile}.exit`, JSON.stringify(exitData));
+      writeFileSync(ownExitFile(sessionFile), JSON.stringify(exitData));
 
       ctx.shutdown();
       return {
@@ -333,7 +357,7 @@ export default function (pi: ExtensionAPI) {
         };
       recorder.subagentDone();
       if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));
+        writeFileSync(ownExitFile(sessionFile), JSON.stringify({ type: "done" }));
       }
       ctx.shutdown();
       return {

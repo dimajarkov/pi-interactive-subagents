@@ -1,3 +1,15 @@
+import { unresolvedDelegations } from "./delegation-journal.ts";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  childBootstrap,
+  claimExecution,
+  executionExitFile,
+  loadSessionPolicy,
+  saveSessionPolicy,
+  privateWrite,
+  type SessionPolicy,
+} from "./recovery.ts";
 import { ManagedLaunchOutcomeUnknown } from "./herdr-parent.ts";
 import { registerDelegationLifecycle } from "./delegation-lifecycle.ts";
 import type {
@@ -331,10 +343,13 @@ function resolveEffectiveInteractive(
   return !(agentDefs?.autoExit ?? false);
 }
 
-function loadAgentDefaults(agentName: string): AgentDefaults | null {
-  const configDir = getAgentConfigDir();
+function loadAgentDefaults(
+  agentName: string,
+  cwd = process.cwd(),
+  configDir = getAgentConfigDir(),
+): AgentDefaults | null {
   const paths = [
-    join(process.cwd(), ".pi", "agents", `${agentName}.md`),
+    join(cwd, ".pi", "agents", `${agentName}.md`),
     join(configDir, "agents", `${agentName}.md`),
     join(getBundledAgentsDir(), `${agentName}.md`),
   ];
@@ -477,6 +492,9 @@ interface RunningSubagent {
   managed?: { client: HerdrParent; job: JobReceipt };
   startTime: number;
   sessionFile: string;
+  exitFile?: string;
+  entryCountBefore?: number;
+  releaseExecution?: () => void;
   parentSessionId?: string;
   parentSessionFile?: string | null;
   launchScriptFile?: string;
@@ -670,7 +688,7 @@ function createSubagentsRuntime() {
       .map((tool) => tool.trim())
       .filter(Boolean);
 
-    if (requested.length === 0) return null;
+    if (effectiveTools === undefined) return null;
 
     const allow = new Set(requested);
     for (const tool of SUBAGENT_CONTROL_TOOLS) {
@@ -977,7 +995,7 @@ function createSubagentsRuntime() {
       cwd: string;
       modelRegistry?: { find(provider: string, modelId: string): unknown };
     },
-    options?: { surface?: string },
+    options?: { surface?: string; onPrepared?: (child: unknown) => void },
   ): Promise<RunningSubagent> {
     const startTime = Date.now();
     const id = Math.random().toString(16).slice(2, 10);
@@ -1037,6 +1055,7 @@ function createSubagentsRuntime() {
       );
     const managedParent = managedClient ? await managedClient.prepare() : undefined;
     let managedJob: JobReceipt | undefined;
+    let releaseExecution: (() => void) | undefined;
     let surface = managedClient
       ? "pending-managed-job"
       : (options?.surface ?? createSurface(params.name, targetCwdForSession));
@@ -1047,9 +1066,9 @@ function createSubagentsRuntime() {
 
       const launchBehavior = resolveLaunchBehavior(params, agentDefs);
 
-      if (launchBehavior.seededSessionMode) {
+      if (agentDefs?.cli !== "claude") {
         seedSubagentSessionFile({
-          mode: launchBehavior.seededSessionMode,
+          mode: launchBehavior.seededSessionMode ?? "lineage-only",
           parentSessionFile: sessionFile,
           childSessionFile: subagentSessionFile,
           childCwd: targetCwdForSession,
@@ -1227,7 +1246,29 @@ function createSubagentsRuntime() {
       envParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
       envParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`);
       if (!managedClient) envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
-      const envPrefix = envParts.join(" ") + " ";
+      const exitFile = executionExitFile(subagentSessionFile, id);
+      envParts.push(`PI_SUBAGENT_EXIT_FILE=${shellEscape(exitFile)}`);
+      const policy: SessionPolicy = {
+        version: 1,
+        sessionId: getNewEntries(subagentSessionFile, 0)[0].id,
+        sessionFile: realpathSync(subagentSessionFile),
+        parentSessionId: sessionId,
+        parentSessionFile: realpathSync(sessionFile),
+        cwd: resolve(targetCwdForSession),
+        configDir: resolve(effectiveAgentDir),
+        agent: params.agent,
+        model: effectiveModel,
+        thinking: effectiveThinking,
+        tools: effectiveTools,
+        skills: effectiveSkills,
+        denied: [...denySet],
+        systemPromptMode,
+        systemPrompt: identityInSystemPrompt ? identity : undefined,
+        autoExit: agentDefs?.autoExit ?? false,
+        interactive: effectiveInteractive,
+      };
+      saveSessionPolicy(policy);
+      releaseExecution = claimExecution(subagentSessionFile, id);
 
       // Pass one initial task; the child input extension applies configured skills.
       // Only full-context fork mode gets a direct task argument because it already
@@ -1263,7 +1304,7 @@ function createSubagentsRuntime() {
       // This was already computed above so session placement, PI_CODING_AGENT_DIR, and cd agree.
       const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
 
-      const piCommand = cdPrefix + envPrefix + parts.join(" ");
+      const piCommand = cdPrefix + childBootstrap(envParts, parts.join(" "), !!managedClient);
       const command = `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`;
       const launchScriptName = `${
         (params.name || "subagent")
@@ -1274,6 +1315,7 @@ function createSubagentsRuntime() {
           .replace(/^-|-$/g, "") || "subagent"
       }-${id}.sh`;
       const launchScriptFile = join(artifactDir, "subagent-scripts", launchScriptName);
+      options?.onPrepared?.({ sessionFile: subagentSessionFile, launchScriptFile });
       if (managedClient) {
         managedJob = await managedClient.launch(
           { name: params.name, cwd: targetCwdForSession, scriptPath: launchScriptFile, command },
@@ -1304,6 +1346,8 @@ function createSubagentsRuntime() {
           : {}),
         startTime,
         sessionFile: subagentSessionFile,
+        exitFile,
+        releaseExecution,
         launchScriptFile,
         activityFile,
         interactive: effectiveInteractive,
@@ -1316,6 +1360,7 @@ function createSubagentsRuntime() {
       runningSubagents.set(id, running);
       return running;
     } catch (error) {
+      if (!(error instanceof ManagedLaunchOutcomeUnknown)) releaseExecution?.();
       // Supplied surfaces were not created by this launch and are never cleaned here.
       if (managedClient) {
         if (managedJob) {
@@ -1371,13 +1416,46 @@ function createSubagentsRuntime() {
     const { name, task, surface, startTime, sessionFile } = running;
     let cleanupAttempted = false;
     let cleanupError: string | undefined;
+    const unresolvedResult = (failure?: string): SubagentResult | undefined => {
+      const descendants = unresolvedDelegations(sessionFile);
+      if (!descendants.length) return undefined;
+      forgetRunning(running);
+      return {
+        name,
+        task,
+        sessionFile,
+        exitCode: 1,
+        elapsed: Math.floor((Date.now() - startTime) / 1000),
+        cleanupOutcome: "retained",
+        error: "unresolved descendants",
+        summary: `Orchestrator ownership is unresolved; original native sessions and surfaces are retained. No descendant cleanup or adoption was attempted.${failure ? ` Observer failure: ${failure}` : ""}\n${JSON.stringify(descendants, null, 2)}`,
+      };
+    };
     const cleanup = async () => {
       cleanupAttempted = true;
       try {
         if (running.managed) await running.managed.client.close(running.managed.job.condition);
         else closeSurface(surface);
+        running.releaseExecution?.();
       } catch (error: any) {
         cleanupError = error?.message ?? String(error);
+        const recoveryReceipt = receiptPath(running);
+        try {
+          privateWrite(recoveryReceipt, {
+            type: "subagent_cleanup_unresolved",
+            name,
+            sessionFile,
+            parentSessionId: running.parentSessionId,
+            parentSessionFile: running.parentSessionFile,
+            cleanupOutcome: "retained",
+            cleanupError,
+            executionReceipt: `${sessionFile}.subagent-active.json`,
+            ...(running.managed ? { job: running.managed.job.condition } : { surface }),
+          });
+        } catch (receiptError) {
+          cleanupError += ` Lifecycle receipt write failed: ${String(receiptError)}`;
+        }
+        cleanupError += ` Recovery receipt: ${recoveryReceipt}; execution ownership: ${sessionFile}.subagent-active.json`;
       }
     };
 
@@ -1389,10 +1467,12 @@ function createSubagentsRuntime() {
             sessionFile,
             watchSignal,
             () => observeRunningSubagent(running),
+            running.exitFile,
           )
         : await pollForExit(surface, watchSignal, {
             interval: 1000,
             sessionFile,
+            exitFile: running.exitFile,
             sentinelFile: running.sentinelFile,
             onTick() {
               observeRunningSubagent(running);
@@ -1447,7 +1527,7 @@ function createSubagentsRuntime() {
           summary,
           exitCode: cleanupError ? 1 : result.exitCode,
           elapsed,
-          ...(cleanupError ? { cleanupError } : {}),
+          ...(cleanupError ? { cleanupError, cleanupOutcome: "retained" as const } : {}),
           ...(sessionId ? { claudeSessionId: sessionId } : {}),
         };
       }
@@ -1455,7 +1535,7 @@ function createSubagentsRuntime() {
       // Pi subagent result extraction
       let summary: string;
       if (existsSync(sessionFile)) {
-        const allEntries = getNewEntries(sessionFile, 0);
+        const allEntries = getNewEntries(sessionFile, running.entryCountBefore ?? 0);
         summary =
           findLastAssistantMessage(allEntries) ??
           (result.errorMessage
@@ -1471,6 +1551,8 @@ function createSubagentsRuntime() {
             : "Sub-agent exited without output";
       }
 
+      const retained = unresolvedResult();
+      if (retained) return retained;
       await cleanup();
       forgetRunning(running);
       if (cleanupError) summary += `\n\nCleanup failed for owned child ${surface}: ${cleanupError}`;
@@ -1482,9 +1564,9 @@ function createSubagentsRuntime() {
         sessionFile,
         exitCode: cleanupError ? 1 : result.exitCode,
         elapsed,
-        ping: result.ping,
+        ping: cleanupError ? undefined : result.ping,
         ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-        ...(cleanupError ? { cleanupError } : {}),
+        ...(cleanupError ? { cleanupError, cleanupOutcome: "retained" as const } : {}),
       };
     } catch (err: any) {
       if (ownerSignal.aborted) {
@@ -1522,6 +1604,8 @@ function createSubagentsRuntime() {
             : {}),
         };
       }
+      const retained = unresolvedResult(err?.message ?? String(err));
+      if (retained) return retained;
       if (!cleanupAttempted) await cleanup();
       const cleanupDetail = cleanupError
         ? ` Cleanup failed for owned child ${surface}: ${cleanupError}`
@@ -1542,7 +1626,8 @@ function createSubagentsRuntime() {
             event: "watcher_abort",
             reason: String(signal.reason ?? "unspecified"),
           },
-          cleanupOutcome: cleanupError ? "failed" : "closed",
+          cleanupOutcome: cleanupError ? "retained" : "closed",
+          ...(cleanupError ? { cleanupError } : {}),
         };
       }
       return {
@@ -1553,7 +1638,8 @@ function createSubagentsRuntime() {
         elapsed: Math.floor((Date.now() - startTime) / 1000),
         error: err?.message ?? String(err),
         sessionFile,
-        cleanupOutcome: cleanupError ? "failed" : "closed",
+        cleanupOutcome: cleanupError ? "retained" : "closed",
+        ...(cleanupError ? { cleanupError } : {}),
       };
     }
   }
@@ -1645,10 +1731,23 @@ function createSubagentsRuntime() {
           }
 
           // Launch the subagent (creates pane, sends command)
-          const outcome = lifecycle.reserve();
+          const outcome = lifecycle.reserve(ctx);
           let running: RunningSubagent;
           try {
-            running = await launchSubagent(params, ctx);
+            running = await launchSubagent(params, ctx, { onPrepared: outcome.bind });
+            try {
+              outcome.bind({
+                sessionFile: running.sessionFile,
+                launchScriptFile: running.launchScriptFile,
+                ...(running.managed
+                  ? { job: running.managed.job.condition }
+                  : { surface: running.surface }),
+              });
+            } catch (error) {
+              outcome.retain(
+                `Acknowledged launch retained but ownership update failed: ${String(error)}`,
+              );
+            }
           } catch (error) {
             if (error instanceof ManagedLaunchOutcomeUnknown) outcome.retain(error.message);
             else outcome.abandon();
@@ -1668,6 +1767,12 @@ function createSubagentsRuntime() {
           watchSubagent(running, watcherAbort.signal, ownerSignal)
             .then((result) => {
               if (result.observerStopped || ownerSignal.aborted) return;
+              if (
+                result.cleanupError ||
+                result.cleanupOutcome === "retained" ||
+                result.cleanupOutcome === "failed"
+              )
+                outcome.retain(result.summary);
               updateWidget(); // reflect removal from Map immediately
 
               if (result.ping) {
@@ -1738,6 +1843,7 @@ function createSubagentsRuntime() {
               task: params.task,
               agent: params.agent,
               sessionFile: running.sessionFile,
+              exitFile: running.exitFile,
               launchScriptFile: running.launchScriptFile,
               lifecycleReceiptFile: receiptPath(running),
               status: "started",
@@ -1945,7 +2051,7 @@ function createSubagentsRuntime() {
           autoExit: Type.Optional(
             Type.Boolean({
               description:
-                "Whether the resumed session should automatically exit after completing its response. Defaults to true for autonomous follow-up work; set false for interactive resumed sessions.",
+                "Whether the resumed session should automatically exit after completing its response. Defaults to the original role policy; set true for autonomous follow-up work or false for an interactive handoff.",
             }),
           ),
         }),
@@ -1982,7 +2088,13 @@ function createSubagentsRuntime() {
           if (ownerSignal.aborted)
             throw new Error("Subagent owner is stopped; use the active native session");
           const name = params.name ?? "Resume";
-          const { autoExit, interactive } = resolveResumeLaunchBehavior(params);
+          const policy = loadSessionPolicy(
+            params.sessionPath,
+            ctx.sessionManager.getSessionId(),
+            ctx.sessionManager.getSessionFile(),
+          );
+          const autoExit = params.autoExit ?? policy.autoExit;
+          const interactive = params.autoExit === undefined ? policy.interactive : !autoExit;
           const startTime = Date.now();
           const id = Math.random().toString(16).slice(2, 10);
 
@@ -2005,15 +2117,34 @@ function createSubagentsRuntime() {
           const managedClient = getMuxBackend() === "herdr" ? HerdrParent.discover() : undefined;
           let managedJob: JobReceipt | undefined;
           let surface = "pending-managed-job";
-          const outcome = lifecycle.reserve();
+          const outcome = lifecycle.reserve(ctx);
+          let releaseExecution: (() => void) | undefined;
           try {
+            releaseExecution = claimExecution(params.sessionPath, id);
             const managedParent = managedClient ? await managedClient.prepare() : undefined;
-            if (!managedClient) surface = createSurface(name, ctx.cwd);
+            if (!managedClient) surface = createSurface(name, policy.cwd);
             if (!managedClient)
               await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
-            // Build pi resume command
+            // Restore the effective original capability policy, independent of mutated role defaults.
             const parts = ["pi", "--session", shellEscape(params.sessionPath)];
+            if (policy.model)
+              parts.push(
+                "--model",
+                shellEscape(policy.thinking ? `${policy.model}:${policy.thinking}` : policy.model),
+              );
+            const tools = buildSubagentToolAllowlist(policy.tools);
+            if (tools) parts.push("--tools", shellEscape(tools));
+            if (policy.systemPromptMode && policy.systemPrompt) {
+              const promptFile = `${params.sessionPath}.${id}.system-prompt.md`;
+              writeFileSync(promptFile, policy.systemPrompt, { mode: 0o600, flag: "wx" });
+              parts.push(
+                policy.systemPromptMode === "replace"
+                  ? "--system-prompt"
+                  : "--append-system-prompt",
+                shellEscape(promptFile),
+              );
+            }
 
             // Load subagent-done extension so the agent can self-terminate if needed
             if (managedClient)
@@ -2046,23 +2177,39 @@ function createSubagentsRuntime() {
               parts.push(shellEscape(`@${resumeMsgFile}`));
             }
 
-            // Build env prefix — propagate PI_CODING_AGENT_DIR for config isolation
-            const resumeEnvParts: string[] = [];
-            if (process.env.PI_CODING_AGENT_DIR) {
+            const currentDenials = resolveDenyTools(
+              policy.agent ? loadAgentDefaults(policy.agent) : null,
+            );
+            for (const tool of resolveDenyTools(
+              policy.agent ? loadAgentDefaults(policy.agent, policy.cwd, policy.configDir) : null,
+            ))
+              currentDenials.add(tool);
+            for (const tool of (process.env.PI_DENY_TOOLS ?? "")
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean))
+              currentDenials.add(tool);
+            const denied = [...new Set([...policy.denied, ...currentDenials])];
+            const exitFile = executionExitFile(params.sessionPath, id);
+            const resumeEnvParts = [
+              `PI_CODING_AGENT_DIR=${shellEscape(policy.configDir)}`,
+              `PI_SUBAGENT_NAME=${shellEscape(name)}`,
+              `PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`,
+              `PI_SUBAGENT_ID=${shellEscape(id)}`,
+              `PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`,
+              `PI_SUBAGENT_EXIT_FILE=${shellEscape(exitFile)}`,
+              `PI_DENY_TOOLS=${shellEscape(denied.join(","))}`,
+            ];
+            if (policy.agent) resumeEnvParts.push(`PI_SUBAGENT_AGENT=${shellEscape(policy.agent)}`);
+            if (policy.skills)
+              resumeEnvParts.push(`PI_SUBAGENT_SKILLS=${shellEscape(policy.skills)}`);
+            if (autoExit) resumeEnvParts.push("PI_SUBAGENT_AUTO_EXIT=1");
+            if (!managedClient) resumeEnvParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`);
+            if (policy.agent === "visual-tester" && process.env.PI_CODEX_VISUAL_HOST)
               resumeEnvParts.push(
-                `PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`,
+                `PI_CODEX_VISUAL_HOST=${shellEscape(process.env.PI_CODEX_VISUAL_HOST)}`,
               );
-            }
-            resumeEnvParts.push(`PI_SUBAGENT_NAME=${shellEscape(name)}`);
-            resumeEnvParts.push(`PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`);
-            resumeEnvParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`);
-            resumeEnvParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`);
-            if (autoExit) {
-              resumeEnvParts.push(`PI_SUBAGENT_AUTO_EXIT=1`);
-            }
-            const resumeEnvPrefix = resumeEnvParts.join(" ") + " ";
-
-            const command = `${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
+            const command = `cd ${shellEscape(policy.cwd)} && ${childBootstrap(resumeEnvParts, parts.join(" "), !!managedClient)}; echo '__SUBAGENT_DONE_'$?'__'`;
             const launchScriptFile = join(
               artifactDir,
               "subagent-scripts",
@@ -2075,9 +2222,10 @@ function createSubagentsRuntime() {
                   .replace(/^-|-$/g, "") || "resume"
               }-resume-${Date.now()}.sh`,
             );
+            outcome.bind({ sessionFile: params.sessionPath, launchScriptFile });
             if (managedClient) {
               managedJob = await managedClient.launch(
-                { name, cwd: ctx.cwd, scriptPath: launchScriptFile, command },
+                { name, cwd: policy.cwd, scriptPath: launchScriptFile, command },
                 managedParent,
               );
               surface = managedJob.condition.terminal.pane_id;
@@ -2106,6 +2254,10 @@ function createSubagentsRuntime() {
                 : {}),
               startTime,
               sessionFile: params.sessionPath,
+              agent: policy.agent,
+              entryCountBefore,
+              exitFile,
+              releaseExecution,
               launchScriptFile,
               activityFile,
               interactive,
@@ -2114,6 +2266,19 @@ function createSubagentsRuntime() {
                 startTimeMs: startTime,
               }),
             };
+            try {
+              outcome.bind({
+                sessionFile: running.sessionFile,
+                launchScriptFile: running.launchScriptFile,
+                ...(running.managed
+                  ? { job: running.managed.job.condition }
+                  : { surface: running.surface }),
+              });
+            } catch (error) {
+              outcome.retain(
+                `Acknowledged resume retained but ownership update failed: ${String(error)}`,
+              );
+            }
             runningSubagents.set(id, running);
             startWidgetRefresh();
             startStatusRefresh(pi);
@@ -2125,6 +2290,12 @@ function createSubagentsRuntime() {
             watchSubagent(running, watcherAbort.signal, ownerSignal)
               .then((result) => {
                 if (result.observerStopped || ownerSignal.aborted) return;
+                if (
+                  result.cleanupError ||
+                  result.cleanupOutcome === "retained" ||
+                  result.cleanupOutcome === "failed"
+                )
+                  outcome.retain(result.summary);
                 updateWidget();
 
                 if (result.ping) {
@@ -2144,18 +2315,21 @@ function createSubagentsRuntime() {
 
                 const allEntries = getNewEntries(params.sessionPath, entryCountBefore);
                 const summary =
-                  findLastAssistantMessage(allEntries) ??
-                  (result.errorMessage
-                    ? `Subagent error: ${result.errorMessage}`
-                    : result.exitCode !== 0
-                      ? `Resumed session exited with code ${result.exitCode}`
-                      : "Resumed session exited without new output");
+                  result.cleanupOutcome === "retained"
+                    ? result.summary
+                    : (findLastAssistantMessage(allEntries) ??
+                      (result.errorMessage
+                        ? `Subagent error: ${result.errorMessage}`
+                        : result.exitCode !== 0
+                          ? `Resumed session exited with code ${result.exitCode}`
+                          : "Resumed session exited without new output"));
                 const presentation = resolveResultPresentation(
                   {
                     ...result,
-                    summary: result.cleanupError
-                      ? `${summary}\n\nCleanup failed for resumed child ${surface}: ${result.cleanupError}`
-                      : summary,
+                    summary:
+                      result.cleanupError && result.cleanupOutcome !== "retained"
+                        ? `${summary}\n\nCleanup failed for resumed child ${surface}: ${result.cleanupError}`
+                        : summary,
                     sessionFile: params.sessionPath,
                   },
                   name,
@@ -2196,6 +2370,7 @@ function createSubagentsRuntime() {
                 id,
                 name,
                 sessionPath: params.sessionPath,
+                exitFile,
                 launchScriptFile,
                 lifecycleReceiptFile: receiptPath(running),
                 status: "started",
@@ -2203,7 +2378,10 @@ function createSubagentsRuntime() {
             };
           } catch (error) {
             if (error instanceof ManagedLaunchOutcomeUnknown) outcome.retain(error.message);
-            else outcome.abandon();
+            else {
+              outcome.abandon();
+              releaseExecution?.();
+            }
             if (managedClient) {
               if (managedJob) {
                 try {

@@ -398,6 +398,7 @@ export class HerdrParent {
     sessionFile: string,
     signal: AbortSignal,
     onTick?: () => void,
+    exitFile = sessionFile + ".exit",
   ): Promise<{
     reason: "done" | "error" | "sentinel" | "ping";
     exitCode: number;
@@ -405,17 +406,17 @@ export class HerdrParent {
     ping?: { name: string; message: string };
   }> {
     while (!signal.aborted) {
-      if (existsSync(sessionFile + ".exit")) {
+      if (existsSync(exitFile)) {
         let data: any;
         try {
-          data = JSON.parse(readFileSync(sessionFile + ".exit", "utf8"));
+          data = JSON.parse(readFileSync(exitFile, "utf8"));
         } catch {
           throw new Error("Invalid child completion sidecar");
         }
         if (!["error", "ping", "done"].includes(data.type))
           throw new Error("Unknown child completion sidecar type");
         // Consume the original completion once before a same-session resume can observe it.
-        unlinkSync(sessionFile + ".exit");
+        unlinkSync(exitFile);
         if (data.type === "error")
           return {
             reason: "error",
@@ -431,13 +432,12 @@ export class HerdrParent {
       try {
         status = await this.get(condition);
       } catch (error) {
-        if (existsSync(sessionFile + ".exit"))
-          return this.poll(condition, sessionFile, signal, onTick);
+        if (existsSync(exitFile))
+          return this.poll(condition, sessionFile, signal, onTick, exitFile);
         throw error;
       }
       // Native completion may be written while the asynchronous status response is in flight.
-      if (existsSync(sessionFile + ".exit"))
-        return this.poll(condition, sessionFile, signal, onTick);
+      if (existsSync(exitFile)) return this.poll(condition, sessionFile, signal, onTick, exitFile);
       if (status.phase === "exited") {
         if (!status.exit || !Number.isInteger(status.exit.code))
           throw new Error("Herdr retained an uncertain job exit; completion sidecar missing");

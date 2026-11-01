@@ -1307,6 +1307,7 @@ export async function pollForExit(
   options: {
     interval: number;
     sessionFile?: string;
+    exitFile?: string;
     sentinelFile?: string;
     onTick?: (elapsed: number) => void;
   },
@@ -1321,7 +1322,7 @@ export async function pollForExit(
     // Fast path: check for .exit sidecar file (written by subagent_done / caller_ping)
     if (options.sessionFile) {
       try {
-        const exitFile = `${options.sessionFile}.exit`;
+        const exitFile = options.exitFile ?? `${options.sessionFile}.exit`;
         if (existsSync(exitFile)) {
           const data = JSON.parse(readFileSync(exitFile, "utf8"));
           rmSync(exitFile, { force: true });
@@ -1350,7 +1351,7 @@ export async function pollForExit(
       // Surface may have been destroyed — check if .exit file appeared in the meantime
       if (options.sessionFile) {
         try {
-          const exitFile = `${options.sessionFile}.exit`;
+          const exitFile = options.exitFile ?? `${options.sessionFile}.exit`;
           if (existsSync(exitFile)) {
             const data = JSON.parse(readFileSync(exitFile, "utf8"));
             rmSync(exitFile, { force: true });
