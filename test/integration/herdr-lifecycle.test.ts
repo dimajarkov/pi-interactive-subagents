@@ -258,6 +258,17 @@ test(
       true,
       (dir) =>
         `Call subagent name InterruptProof agent lifecycle task ${JSON.stringify(`Use bash to run exactly: printf STARTED_38 > ${shellEscape(join(dir, "started"))}; sleep 120; printf UNEXPECTED_38 > ${shellEscape(join(dir, "finished"))}. Then return ORIGINAL_RESULT_38.`)}. End your turn immediately. When asked to interrupt, use subagent_interrupt name InterruptProof and end your turn. On independent completion reply PARENT_COMPLETION_38. Do not inspect user files.`,
+      ({ dir, config }) => {
+        const observer = join(dir, "takeover-reload-observer.ts");
+        writeFileSync(
+          observer,
+          `import {writeFileSync} from "node:fs"; export default function(pi) { pi.on("session_start", (e) => { if(e.reason === "reload" && process.env.PI_SUBAGENT_NAME === "InterruptProof") writeFileSync(${JSON.stringify(join(dir, "takeover-reloaded"))}, "reloaded"); }); }`,
+        );
+        const path = join(config, "settings.json");
+        const settings = JSON.parse(readFileSync(path, "utf8"));
+        settings.extensions.push(observer);
+        writeFileSync(path, JSON.stringify(settings));
+      },
     );
     await waitFor(() => existsSync(join(h.dir, "started")), "child active bash");
     const child = h.panes().find((p: any) => p.pane_id !== h.parent);
@@ -316,6 +327,10 @@ test(
         .some((p: any) => p.pane_id === child.pane_id && p.terminal_id === child.terminal_id),
       "same pane remains available after human input",
     );
+    // Reload the real native child after takeover, retaining the same execution.
+    const reloadMarker = join(h.dir, "takeover-reloaded");
+    h.herdr(["pane", "run", child.pane_id, "/reload"]);
+    await waitFor(() => existsSync(reloadMarker), "human-controlled child reload");
     h.prompt(child.pane_id, "Reply SECOND_HUMAN_TURN_38 exactly. Do not call tools.");
     await waitFor(
       () =>

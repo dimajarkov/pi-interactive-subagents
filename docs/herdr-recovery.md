@@ -52,6 +52,9 @@ Transport errors likewise cannot authorize cleanup when durable descendant owner
 ## Same-session native reload
 
 Native `/reload` replaces extension registrations and invalidates their SDK/context objects.
+The child records started/takeover state in native custom entries bound to its execution ID.
+A same-execution reload retains human takeover and recognizes the first new input as manual control.
+An explicit managed resume has a fresh execution ID and uses its requested autonomous policy.
 A bounded process-owned bridge preserves an already-enrolled Herdr connection only across a quiescent reload of the exact same native ID and canonical native file.
 The fresh registration claims at `session_start` and binds fresh callbacks/context before accepting control input.
 The consumed enrollment credential stays absent from the environment and is never persisted or replayed.

@@ -40,6 +40,7 @@ function host() {
     sendUserMessage(message: string) {
       messages.push(message);
     },
+    appendEntry() {},
     getAllTools() {
       return [...tools.values()];
     },
@@ -617,3 +618,70 @@ test("child widget shortcut preserves native terminal editor bindings", () => {
   for (const key of h.shortcuts.keys())
     assert.ok(!native.has(key), `child widget overrides native ${key}`);
 });
+
+test("child widget excludes configured but inactive tools under a narrow allowlist", async () =>
+  isolated(async () => {
+    const h = host();
+    h.tools.set("read", { name: "read" });
+    h.tools.set("bash", { name: "bash" });
+    h.api.getActiveTools = () => ["read", "caller_ping", "subagent_done"];
+    childExtension(h.api);
+    let widget: any;
+    const ctx = {
+      ui: {
+        setWidget: (_: string, component: any) => {
+          widget = component;
+        },
+      },
+    };
+    for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+    await h.shortcuts.get("alt+j").handler(ctx);
+    const text = widget(null, theme).render(180).join("\n");
+    assert.match(text, /3 available/);
+    assert.doesNotMatch(text, /bash/);
+  }));
+
+test("reload retains takeover and recognizes the first new input; explicit resume starts a fresh execution", async () =>
+  isolated(async () => {
+    process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+    process.env.PI_SUBAGENT_ID = "execution-original";
+    const entries: any[] = [];
+    let shutdowns = 0;
+    const ctx = {
+      sessionManager: {
+        getEntries: () => entries,
+        getSessionId: () => "native-control",
+        getSessionFile: () => undefined,
+      },
+      ui: { setWidget() {} },
+      shutdown: () => shutdowns++,
+    };
+    function registration() {
+      const h = host();
+      h.api.appendEntry = (customType: string, data: unknown) =>
+        entries.push({ type: "custom", customType, data });
+      childExtension(h.api);
+      const emit = (name: string, event: any = {}) => {
+        for (const fn of h.events.get(name) ?? []) fn(event, ctx);
+      };
+      emit("session_start");
+      return emit;
+    }
+    const first = registration();
+    first("input"); // Original launch message is not human takeover.
+    first("agent_start");
+    const afterReload = registration();
+    afterReload("input"); // First post-reload input must count as takeover.
+    afterReload("agent_start");
+    afterReload("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 0);
+    const anotherReload = registration();
+    anotherReload("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 0, "takeover survives reload without needing another human input");
+    process.env.PI_SUBAGENT_ID = "execution-resumed";
+    const resumed = registration();
+    resumed("input");
+    resumed("agent_start");
+    resumed("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 1, "a deliberate resume uses its new autonomous execution policy");
+  }));

@@ -39,6 +39,8 @@ function host(dir: string, name: string, nativeFile?: string) {
     registerMessageRenderer() {},
     registerShortcut() {},
     getAllTools: () => [...tools.values()],
+    getActiveTools: () => [...tools.keys()],
+    appendEntry() {},
     sendMessage: (message: any) => delivered.push(message),
   };
   const file = nativeFile ?? join(dir, name + ".jsonl");

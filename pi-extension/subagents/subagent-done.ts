@@ -152,9 +152,28 @@ export default function (pi: ExtensionAPI) {
 
   let userTookOver = false;
   let agentStarted = false;
+  const executionId = process.env.PI_SUBAGENT_ID;
+  const controlEntryType = "subagent_execution_control";
+  function persistControl() {
+    if (executionId) pi.appendEntry(controlEntryType, { executionId, agentStarted, userTookOver });
+  }
 
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
+    // Native custom entries survive extension replacement without inheriting
+    // takeover from an earlier, explicitly resumed execution of this session.
+    const control = ctx.sessionManager
+      ?.getEntries?.()
+      .findLast(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === controlEntryType &&
+          (entry.data as any)?.executionId === executionId,
+      );
+    if (executionId && control?.type === "custom") {
+      agentStarted = (control.data as any)?.agentStarted === true;
+      userTookOver = (control.data as any)?.userTookOver === true;
+    }
     recorder.sessionStart();
     denied = parseDeniedTools(deniedToolsValue);
     if (denied.length) {
@@ -175,9 +194,11 @@ export default function (pi: ExtensionAPI) {
         return;
       }
     }
-    const tools = pi.getAllTools();
-    toolNames = tools
+    const activeTools = new Set(pi.getActiveTools());
+    toolNames = pi
+      .getAllTools()
       .map((t) => t.name)
+      .filter((name) => activeTools.has(name))
       .filter((name) => !denied.includes(name))
       .sort();
 
@@ -190,7 +211,10 @@ export default function (pi: ExtensionAPI) {
     // Ignore the initial task message that starts an autonomous subagent.
     // Only inputs after the first agent run has started count as user takeover.
     if (!shouldMarkUserTookOver(agentStarted)) return;
-    userTookOver = true;
+    if (!userTookOver) {
+      userTookOver = true;
+      persistControl();
+    }
   });
 
   pi.on("before_agent_start", () => {
@@ -198,7 +222,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", () => {
-    agentStarted = true;
+    if (!agentStarted) {
+      agentStarted = true;
+      persistControl();
+    }
     recorder.agentStart();
   });
 
