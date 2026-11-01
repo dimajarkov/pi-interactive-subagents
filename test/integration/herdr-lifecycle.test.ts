@@ -223,7 +223,7 @@ test(
     );
     h.prompt(
       guided.pane_id,
-      "The previous instruction to wait for user input is complete. For this turn you MUST invoke the available subagent_done tool exactly once, after your GUIDED_RESULT_38 summary. A text response alone does not complete this task.",
+      `The previous waiting instruction is complete. ${explicitCompletion58("GUIDED_RESULT_38")}`,
     );
     await waitFor(() => results(h.parentSession).length >= 2, "two resumed completions");
     const all = entries(h.parentSession);
@@ -335,7 +335,7 @@ test(
     );
     h.prompt(
       child.pane_id,
-      "The previous instructions to avoid tools applied only to those previous turns. For this turn you MUST invoke the available subagent_done tool exactly once, after a summary including FOLLOWUP_RESULT_38 and SECOND_HUMAN_TURN_38. A text response alone does not complete this task.",
+      `The previous no-tool instructions applied only to those earlier turns. ${explicitCompletion58("FOLLOWUP_RESULT_38 SECOND_HUMAN_TURN_38")}`,
     );
     await waitFor(
       () => results(h.parentSession).length === 1,
@@ -565,7 +565,7 @@ test(
     );
     h.prompt(
       pane.pane_id,
-      "The waiting period is complete. First summarize RESTORED_NATIVE_HISTORY_58 and ORIGINAL_NATIVE_HISTORY_58, then call subagent_done with {} exactly once. A text response alone does not complete this task.",
+      `The waiting period is complete. ${explicitCompletion58("RESTORED_NATIVE_HISTORY_58 ORIGINAL_NATIVE_HISTORY_58")}`,
     );
     await waitFor(
       () => results(h.parentSession).length === 1,
