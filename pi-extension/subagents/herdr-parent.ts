@@ -35,6 +35,27 @@ const FEATURES = [
   "external_request_correlation_v1",
 ];
 const MAX_FRAME = 16384;
+/** The transport proved that no request bytes were dispatched to the server. */
+export class HerdrRequestNotDispatched extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "HerdrRequestNotDispatched";
+  }
+}
+
+/** A launch mutation may have succeeded but returned no trustworthy ownership receipt. */
+export class ManagedLaunchOutcomeUnknown extends Error {
+  readonly recoveryReceipt: string;
+  constructor(message: string, recoveryReceipt: string, options?: ErrorOptions) {
+    super(
+      `${message} Launch ownership is unresolved; do not retry or complete. Recovery receipt: ${recoveryReceipt}`,
+      options,
+    );
+    this.name = "ManagedLaunchOutcomeUnknown";
+    this.recoveryReceipt = recoveryReceipt;
+  }
+}
+
 export class HerdrParent {
   readonly socket: string;
   readonly parentPane: string;
@@ -65,17 +86,27 @@ export class HerdrParent {
   async request(method: string, params: object, id = randomUUID()): Promise<any> {
     const frame = JSON.stringify({ id, method, params }) + "\n";
     if (Buffer.byteLength(frame) > MAX_FRAME)
-      throw new Error("Herdr request exceeds the managed frame limit");
+      throw new HerdrRequestNotDispatched(
+        "Herdr request exceeds the managed frame limit; no request dispatched",
+      );
     return new Promise((resolve, reject) => {
       const socket = net.connect(this.socket);
       let buffer = Buffer.alloc(0),
-        done = false;
+        done = false,
+        dispatched = false;
       const finish = (error?: Error, result?: unknown) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         socket.destroy();
-        if (error) reject(error);
+        if (error)
+          reject(
+            dispatched
+              ? error
+              : new HerdrRequestNotDispatched(error.message + "; no request dispatched", {
+                  cause: error,
+                }),
+          );
         else resolve(result);
       };
       const timer = setTimeout(
@@ -87,7 +118,10 @@ export class HerdrParent {
           ),
         5000,
       );
-      socket.on("connect", () => socket.write(frame));
+      socket.on("connect", () => {
+        dispatched = true;
+        socket.write(frame);
+      });
       socket.on("error", (e) => finish(e));
       socket.on("end", () =>
         finish(new Error(`Herdr ${method} closed without a matching response`)),
@@ -177,27 +211,62 @@ export class HerdrParent {
         "\n",
       { mode: 0o700 },
     );
-    const result = await this.request("terminal.job.launch", {
-      parent: condition,
-      argv: ["/bin/bash", options.scriptPath],
-      cwd: options.cwd,
-      env: options.env ?? {},
-      direction: "right",
-      label: options.name,
-    });
-    if (
-      result.type !== "managed_terminal" ||
-      !result.condition?.job_id ||
-      !["pane_id", "tab_id", "terminal_id", "launch_id"].every(
-        (key) =>
-          typeof result.condition.terminal?.[key] === "string" && result.condition.terminal[key],
-      ) ||
-      result.condition.terminal.pane_id === this.parentPane
-    )
-      throw new Error(
-        "Herdr launch returned no safe managed job condition; inspect the original parent before cleanup",
-      );
-    return result;
+    try {
+      const result = await this.request("terminal.job.launch", {
+        parent: condition,
+        argv: ["/bin/bash", options.scriptPath],
+        cwd: options.cwd,
+        env: options.env ?? {},
+        direction: "right",
+        label: options.name,
+      });
+      if (
+        result.type !== "managed_terminal" ||
+        !result.condition?.job_id ||
+        !["pane_id", "tab_id", "terminal_id", "launch_id"].every(
+          (key) =>
+            typeof result.condition.terminal?.[key] === "string" && result.condition.terminal[key],
+        ) ||
+        result.condition.terminal.pane_id === this.parentPane
+      )
+        throw new Error(
+          "Herdr launch returned no safe managed job condition; inspect the original parent before cleanup",
+        );
+      return result;
+    } catch (cause) {
+      // A structured server rejection is definitive. All transport/protocol failures
+      // after dispatch can hide a successful allocation and must retain ownership.
+      if (
+        cause instanceof HerdrRequestNotDispatched ||
+        (cause instanceof Error && cause.message.startsWith("Herdr terminal.job.launch:"))
+      )
+        throw cause;
+      const recoveryReceipt = options.scriptPath + ".lifecycle.json";
+      const diagnostic = cause instanceof Error ? cause.message : String(cause);
+      let recordingFailure = "";
+      try {
+        writeFileSync(
+          recoveryReceipt,
+          JSON.stringify(
+            {
+              type: "subagent_launch_outcome_unknown",
+              parent: condition,
+              scriptPath: options.scriptPath,
+              cleanupOutcome: "retained",
+              diagnostic,
+            },
+            null,
+            2,
+          ),
+          { mode: 0o600 },
+        );
+      } catch (recordingError) {
+        recordingFailure = ` Could not write recovery receipt: ${recordingError instanceof Error ? recordingError.message : String(recordingError)}. Preserve the original parent and launch script for manual inspection.`;
+      }
+      throw new ManagedLaunchOutcomeUnknown(diagnostic + recordingFailure, recoveryReceipt, {
+        cause,
+      });
+    }
   }
 
   async get(condition: JobCondition): Promise<JobReceipt> {

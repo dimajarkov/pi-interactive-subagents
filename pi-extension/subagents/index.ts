@@ -1,3 +1,5 @@
+import { ManagedLaunchOutcomeUnknown } from "./herdr-parent.ts";
+import { registerDelegationLifecycle } from "./delegation-lifecycle.ts";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -1557,6 +1559,7 @@ function createSubagentsRuntime() {
   }
 
   function register(pi: ExtensionAPI) {
+    const lifecycle = registerDelegationLifecycle(pi);
     registerVisualObservation(pi);
     // Capture the UI context for widget updates
     pi.on("session_start", (_event, ctx) => {
@@ -1656,7 +1659,15 @@ function createSubagentsRuntime() {
           }
 
           // Launch the subagent (creates pane, sends command)
-          const running = await launchSubagent(params, ctx);
+          const outcome = lifecycle.reserve();
+          let running: RunningSubagent;
+          try {
+            running = await launchSubagent(params, ctx);
+          } catch (error) {
+            if (error instanceof ManagedLaunchOutcomeUnknown) outcome.retain(error.message);
+            else outcome.abandon();
+            throw error;
+          }
 
           // Create a separate AbortController for the watcher
           // (the tool's signal completes when we return)
@@ -1676,60 +1687,51 @@ function createSubagentsRuntime() {
               if (result.ping) {
                 // Subagent is requesting help — steer a ping message with session path for resume
                 const sessionRef = `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`;
-                pi.sendMessage(
-                  {
-                    customType: "subagent_ping",
-                    content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
-                    display: true,
-                    details: {
-                      name: result.ping.name,
-                      message: result.ping.message,
-                      agent: running.agent,
-                      sessionFile: result.sessionFile,
-                    },
+                outcome.send({
+                  customType: "subagent_ping",
+                  content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
+                  display: true,
+                  details: {
+                    name: result.ping.name,
+                    message: result.ping.message,
+                    agent: running.agent,
+                    sessionFile: result.sessionFile,
                   },
-                  { triggerTurn: true, deliverAs: "steer" },
-                );
+                });
                 return;
               }
 
               const presentation = resolveResultPresentation(result, running.name);
 
-              pi.sendMessage(
-                {
-                  customType: "subagent_result",
-                  content: presentation,
-                  display: true,
-                  details: {
-                    name: running.name,
-                    task: running.task,
-                    agent: running.agent,
-                    exitCode: result.exitCode,
-                    elapsed: result.elapsed,
-                    sessionFile: result.sessionFile,
-                    ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-                    ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
-                    ...(result.error ? { error: result.error } : {}),
-                    ...(result.cancellation ? { cancellation: result.cancellation } : {}),
-                    ...(result.cleanupOutcome ? { cleanupOutcome: result.cleanupOutcome } : {}),
-                    ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
-                  },
+              outcome.send({
+                customType: "subagent_result",
+                content: presentation,
+                display: true,
+                details: {
+                  name: running.name,
+                  task: running.task,
+                  agent: running.agent,
+                  exitCode: result.exitCode,
+                  elapsed: result.elapsed,
+                  sessionFile: result.sessionFile,
+                  ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
+                  ...(result.error ? { error: result.error } : {}),
+                  ...(result.cancellation ? { cancellation: result.cancellation } : {}),
+                  ...(result.cleanupOutcome ? { cleanupOutcome: result.cleanupOutcome } : {}),
+                  ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
-                { triggerTurn: true, deliverAs: "steer" },
-              );
+              });
             })
             .catch((err) => {
               if (ownerSignal.aborted) return;
               updateWidget();
-              pi.sendMessage(
-                {
-                  customType: "subagent_result",
-                  content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
-                  display: true,
-                  details: { name: running.name, task: running.task, error: err?.message },
-                },
-                { triggerTurn: true, deliverAs: "steer" },
-              );
+              outcome.send({
+                customType: "subagent_result",
+                content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
+                display: true,
+                details: { name: running.name, task: running.task, error: err?.message },
+              });
             });
 
           // Return immediately
@@ -2015,10 +2017,12 @@ function createSubagentsRuntime() {
           const entryCountBefore = getNewEntries(params.sessionPath, 0).length;
 
           const managedClient = getMuxBackend() === "herdr" ? HerdrParent.discover() : undefined;
-          const managedParent = managedClient ? await managedClient.prepare() : undefined;
           let managedJob: JobReceipt | undefined;
-          let surface = managedClient ? "pending-managed-job" : createSurface(name, ctx.cwd);
+          let surface = "pending-managed-job";
+          const outcome = lifecycle.reserve();
           try {
+            const managedParent = managedClient ? await managedClient.prepare() : undefined;
+            if (!managedClient) surface = createSurface(name, ctx.cwd);
             if (!managedClient)
               await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
@@ -2139,19 +2143,16 @@ function createSubagentsRuntime() {
 
                 if (result.ping) {
                   const sessionRef = `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`;
-                  pi.sendMessage(
-                    {
-                      customType: "subagent_ping",
-                      content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
-                      display: true,
-                      details: {
-                        name: result.ping.name,
-                        message: result.ping.message,
-                        sessionFile: params.sessionPath,
-                      },
+                  outcome.send({
+                    customType: "subagent_ping",
+                    content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
+                    display: true,
+                    details: {
+                      name: result.ping.name,
+                      message: result.ping.message,
+                      sessionFile: params.sessionPath,
                     },
-                    { triggerTurn: true, deliverAs: "steer" },
-                  );
+                  });
                   return;
                 }
 
@@ -2174,39 +2175,33 @@ function createSubagentsRuntime() {
                   name,
                 );
 
-                pi.sendMessage(
-                  {
-                    customType: "subagent_result",
-                    content: presentation,
-                    display: true,
-                    details: {
-                      name,
-                      task: params.message ?? "resumed session",
-                      exitCode: result.exitCode,
-                      elapsed: result.elapsed,
-                      sessionFile: params.sessionPath,
-                      ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-                      ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
-                      ...(result.error ? { error: result.error } : {}),
-                      ...(result.cancellation ? { cancellation: result.cancellation } : {}),
-                      ...(result.cleanupOutcome ? { cleanupOutcome: result.cleanupOutcome } : {}),
-                    },
+                outcome.send({
+                  customType: "subagent_result",
+                  content: presentation,
+                  display: true,
+                  details: {
+                    name,
+                    task: params.message ?? "resumed session",
+                    exitCode: result.exitCode,
+                    elapsed: result.elapsed,
+                    sessionFile: params.sessionPath,
+                    ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                    ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}),
+                    ...(result.error ? { error: result.error } : {}),
+                    ...(result.cancellation ? { cancellation: result.cancellation } : {}),
+                    ...(result.cleanupOutcome ? { cleanupOutcome: result.cleanupOutcome } : {}),
                   },
-                  { triggerTurn: true, deliverAs: "steer" },
-                );
+                });
               })
               .catch((err) => {
                 if (ownerSignal.aborted) return;
                 updateWidget();
-                pi.sendMessage(
-                  {
-                    customType: "subagent_result",
-                    content: `Resume error: ${err?.message ?? String(err)}`,
-                    display: true,
-                    details: { name, error: err?.message },
-                  },
-                  { triggerTurn: true, deliverAs: "steer" },
-                );
+                outcome.send({
+                  customType: "subagent_result",
+                  content: `Resume error: ${err?.message ?? String(err)}`,
+                  display: true,
+                  details: { name, error: err?.message },
+                });
               });
 
             return {
@@ -2221,6 +2216,8 @@ function createSubagentsRuntime() {
               },
             };
           } catch (error) {
+            if (error instanceof ManagedLaunchOutcomeUnknown) outcome.retain(error.message);
+            else outcome.abandon();
             if (managedClient) {
               if (managedJob) {
                 try {

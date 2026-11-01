@@ -249,7 +249,7 @@ test(
           (m) =>
             m.role === "toolResult" &&
             m.toolName === "subagent_interrupt" &&
-            m.details?.status === "interrupt_requested",
+            m.details?.status === "interrupted_verified",
         ),
       "public interruption acknowledgement",
     );

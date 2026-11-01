@@ -1,3 +1,8 @@
+import {
+  outstandingDelegation,
+  delegationExitRefusal,
+  requireDelegationLifecycleBus,
+} from "./delegation-lifecycle.ts";
 /**
  * Extension loaded into sub-agents.
  * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+J)
@@ -77,6 +82,7 @@ export function parseDeniedTools(rawValue: string | undefined): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+  requireDelegationLifecycleBus(pi);
   let toolNames: string[] = [];
   let denied: string[] = [];
   let expanded = false;
@@ -174,7 +180,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
-    const shouldExit = autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages);
+    const shouldExit =
+      autoExit &&
+      !outstandingDelegation(pi, ctx) &&
+      shouldAutoExitOnAgentEnd(userTookOver, messages);
 
     if (shouldExit) {
       // Surface stopReason: "error" turns (auto-retry exhausted, provider
@@ -280,6 +289,13 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
+      const refusal = delegationExitRefusal(pi, ctx);
+      if (refusal)
+        return {
+          isError: true,
+          content: [{ type: "text", text: refusal }],
+          details: { outstandingDelegation: true },
+        };
       recorder.callerPing();
       const exitData = {
         type: "ping" as const,
@@ -308,6 +324,13 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
+      const refusal = delegationExitRefusal(pi, ctx);
+      if (refusal)
+        return {
+          isError: true,
+          content: [{ type: "text", text: refusal }],
+          details: { outstandingDelegation: true },
+        };
       recorder.subagentDone();
       if (sessionFile) {
         writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import net from "node:net";
 /** Public extension registration, discovery and native TUI component contracts.
  * The host API is a boundary fixture; these tests do not prove physical keys or pixels.
@@ -19,6 +20,7 @@ function host() {
   const shortcuts = new Map<string, any>();
   const messages: string[] = [];
   const api: any = {
+    events: new EventEmitter(),
     on(name: string, handler: any) {
       events.set(name, [...(events.get(name) ?? []), handler]);
     },

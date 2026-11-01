@@ -68,7 +68,7 @@ test(
     // Observe the native public host capability surface, not model self-report.
     writeFileSync(
       join(config, "observer.ts"),
-      `import { writeFileSync } from "node:fs";\nexport default function(pi) { pi.on("session_start", (_event, ctx) => { const file = ctx.sessionManager.getSessionFile(); if (file) writeFileSync(file + ".capabilities.json", JSON.stringify({ cwd: ctx.cwd, activeTools: pi.getActiveTools(), allTools: pi.getAllTools().map(t => t.name), role: process.env.PI_SUBAGENT_AGENT, denied: process.env.PI_DENY_TOOLS })); }); }\n`,
+      `import { writeFileSync } from "node:fs";\nexport default function(pi) { pi.on("session_start", (_event, ctx) => { const file = ctx.sessionManager.getSessionFile(); if (file) writeFileSync(file + ".capabilities.json", JSON.stringify({ cwd: ctx.cwd, activeTools: pi.getActiveTools(), allTools: pi.getAllTools().map(t => t.name), role: process.env.PI_SUBAGENT_AGENT, pane: process.env.HERDR_PANE_ID, denied: process.env.PI_DENY_TOOLS })); }); }\n`,
     );
     mkdirSync(join(config, "agents"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "skills", "native-proof"), { recursive: true, mode: 0o700 });
@@ -79,7 +79,7 @@ test(
     const agent = (name: string, extra: string, body: string) =>
       writeFileSync(
         join(project, ".pi", "agents", `${name}.md`),
-        `---\nname: ${name}\nmodel: ${model}\nthinking: medium\nauto-exit: ${name === "proof-nested" ? "false" : "true"}\ntools: bash,read,subagent,subagents_list\n${extra}\n---\n${body}\n`,
+        `---\nname: ${name}\nmodel: ${model}\nthinking: medium\nauto-exit: true\ntools: bash,read,subagent,subagents_list\n${extra}\n---\n${body}\n`,
       );
     const synthetic = "Run only the exact synthetic task. Do not inspect any user files.";
     agent("proof-lineage", "session-mode: lineage-only\nspawning: false", synthetic);
@@ -134,7 +134,7 @@ test(
         (name) =>
           `Run exactly: sleep 30; pwd -P > ${shellEscape(markerFor(name))}. Then return RESULT_${name} and apply any configured skill instructions to the final result.`,
       );
-    const nestedTask = `Call subagent with name "Leaf39", agent "proof-leaf", cwd ${JSON.stringify(childCwd)}, task ${JSON.stringify(`Run exactly: sleep 20; pwd -P > ${shellEscape(markerFor("Leaf39"))}. Return exactly RESULT_Leaf39.`)}. Write NESTED_CONTINUED_39 to ${join(dir, "nested-continued.txt")} immediately after that call. Wait for its asynchronous completion. Once its result arrives, emit assistant summary RESULT_Nested39 RESULT_Leaf39 and immediately invoke subagent_done with empty arguments {} before ending your turn. Do not merely return final text; the task is complete only after that tool call.`;
+    const nestedTask = `Call subagent with name "Leaf39", agent "proof-leaf", cwd ${JSON.stringify(childCwd)}, task ${JSON.stringify(`Run exactly: sleep 20; pwd -P > ${shellEscape(markerFor("Leaf39"))}. Return exactly RESULT_Leaf39.`)}. While the leaf is still working, call subagent_done with {} and caller_ping with message "GUARD_PROOF_55". Both must return errors refusing exit because owned work is outstanding. Then write NESTED_CONTINUED_39 to ${join(dir, "nested-continued.txt")} immediately after that call. Wait for its asynchronous completion. End your initial turn normally while it works. Once its asynchronous result arrives, return exactly RECONCILED_NESTED_55 RESULT_Nested39 RESULT_Leaf39. Do not call subagent_done; ordinary autonomous completion must return the reconciled result.`;
     const calls = [
       {
         name: names[0],
@@ -303,6 +303,23 @@ test(
     );
 
     const nested = childSessions.get("Nested39")!;
+    assert.match(
+      results.find((r) => r.details.name === "Nested39").content,
+      /RECONCILED_NESTED_55/,
+    );
+    for (const toolName of ["subagent_done", "caller_ping"]) {
+      assert.ok(
+        nested.some(
+          (e) =>
+            e.type === "message" &&
+            e.message.role === "toolResult" &&
+            e.message.toolName === toolName &&
+            e.message.isError &&
+            JSON.stringify(e.message.content).includes("Cannot exit while delegated children"),
+        ),
+        `${toolName} refuses exit through the native public tool while the leaf works`,
+      );
+    }
     assert.ok(
       nested.some(
         (e) =>
@@ -321,9 +338,12 @@ test(
       (m) => m.role === "toolResult" && m.toolName === "subagent",
     );
     const directPanes = launchResults.map(
-      (m) => readFileSync(m.details.launchScriptFile, "utf8").match(/^# Surface: (.+)$/m)?.[1],
+      (m) => JSON.parse(readFileSync(m.details.sessionFile + ".capabilities.json", "utf8")).pane,
     );
-    assert.ok(directPanes.every(Boolean), "public launch artifacts identify all direct children");
+    assert.ok(
+      directPanes.every(Boolean),
+      "native host capability snapshots identify all direct children",
+    );
     assert.ok(
       observations.some((o) => directPanes.every((id) => o.panes.some((p: any) => p.id === id))),
       "all four direct native child panes coexist before completion",

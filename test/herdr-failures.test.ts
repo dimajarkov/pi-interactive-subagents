@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import net from "node:net";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -94,6 +95,11 @@ else if (a[1] === "read") console.log("synthetic active child");
           assert.match(readFileSync(p.argv[1], "utf8"), /HERDR_PANE_ID/);
           s.sequence++;
           writeFileSync(state, JSON.stringify(s));
+          if (s.uncertainLaunch) {
+            if (s.recoveryWriteFails) mkdirSync(p.argv[1] + ".lifecycle.json");
+            socket.end();
+            continue;
+          }
           const child = "child-" + s.sequence;
           result = {
             type: "managed_terminal",
@@ -159,6 +165,7 @@ else if (a[1] === "read") console.log("synthetic active child");
     JSON.stringify({ type: "session", id: "parent-session", version: 3 }) + "\n",
   );
   const api: any = {
+    events: new EventEmitter(),
     on(name: string, fn: any) {
       events.set(name, [...(events.get(name) ?? []), fn]);
     },
@@ -522,4 +529,37 @@ test("same-session resume does not consume a previous managed child completion",
     const second = await result(h);
     assert.match(second.content, /SECOND_COMPLETION/);
     assert.equal(second.details.exitCode, 0);
+  }));
+
+test("a launch transport loss retains recovery evidence and never guesses child cleanup", async () =>
+  fixture(async (h: any) => {
+    h.configure({ fail: [], uncertainLaunch: true });
+    let receipt!: string;
+    await assert.rejects(spawn(h), (error: any) => {
+      assert.equal(error.name, "ManagedLaunchOutcomeUnknown");
+      assert.match(error.message, /do not retry or complete/);
+      receipt = error.recoveryReceipt;
+      return true;
+    });
+    const evidence = JSON.parse(readFileSync(receipt, "utf8"));
+    assert.equal(evidence.type, "subagent_launch_outcome_unknown");
+    assert.equal(evidence.cleanupOutcome, "retained");
+    assert.equal(evidence.parent.pane_id, "parent");
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
+  }));
+
+test("an unwritable recovery receipt cannot turn an uncertain launch into a definite rejection", async () =>
+  fixture(async (h: any) => {
+    h.configure({ fail: [], uncertainLaunch: true, recoveryWriteFails: true });
+    await assert.rejects(spawn(h), (error: any) => {
+      assert.equal(error.name, "ManagedLaunchOutcomeUnknown");
+      assert.match(error.message, /closed without a matching response/);
+      assert.match(error.message, /Could not write recovery receipt/);
+      assert.match(error.message, /Preserve the original parent and launch script/);
+      assert.match(error.cause.message, /closed without a matching response/);
+      return true;
+    });
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
   }));

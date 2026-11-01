@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
@@ -91,6 +92,7 @@ function createMockExtensionApi() {
     sentUserMessages,
     sentMessages,
     api: {
+      events: new EventEmitter(),
       on() {},
       registerTool(tool: any) {
         registeredTools.push(tool);

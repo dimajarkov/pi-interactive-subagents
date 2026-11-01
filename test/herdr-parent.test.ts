@@ -258,3 +258,23 @@ test("native completion arriving during a successful exited-job response wins an
     assert.equal(result.exitCode, 0);
     assert.equal(existsSync(sessionFile + ".exit"), false);
   }));
+
+test("a launch connection failure before dispatch allocates no phantom child or uncertain receipt", () =>
+  fixture(async (h) => {
+    const parent = await h.client.prepare();
+    const unavailable = new HerdrParent(join(h.dir, "vanished-server.sock"), "parent");
+    const scriptPath = join(h.dir, "never-dispatched.sh");
+    await assert.rejects(
+      unavailable.launch({ name: "No server", cwd: h.dir, scriptPath, command: "pi" }, parent),
+      (error: any) => {
+        assert.equal(error.name, "HerdrRequestNotDispatched");
+        assert.match(error.message, /no request dispatched/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(scriptPath + ".lifecycle.json"), false);
+    assert.equal(
+      h.calls.some((call: any) => call.method === "terminal.job.launch"),
+      false,
+    );
+  }));
