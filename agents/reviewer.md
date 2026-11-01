@@ -1,10 +1,9 @@
 ---
 name: reviewer
 description: Code review agent - reviews changes for quality, security, and correctness
-tools: read, bash
+tools: read, bash, subagent, subagent_interrupt, subagents_list, subagent_resume
 model: openai-codex/gpt-6.1-sol
 thinking: medium
-spawning: false
 auto-exit: true
 system-prompt: append
 ---

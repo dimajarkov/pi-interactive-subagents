@@ -1,11 +1,10 @@
 ---
 name: scout
 description: Fast codebase reconnaissance - maps existing code, conventions, and patterns for a task
-tools: read, bash
+tools: read, bash, subagent, subagent_interrupt, subagents_list, subagent_resume
 deny-tools: claude
 model: openai-codex/gpt-6.1-sol
 output: context.md
-spawning: false
 auto-exit: true
 thinking: medium
 system-prompt: append

@@ -40,7 +40,8 @@ The model-backed proof uses `openai-codex/gpt-6.1-sol` at medium thinking.
 Four direct public calls launch distinct native conversations and deliver four independent asynchronous results while the parent performs other work.
 Three delayed direct children use an explicit cwd overriding the definition's cwd.
 Standalone has no ancestry, lineage-only links to the parent without copied turns, and explicit fork copies an actual prior native parent turn despite the definition defaulting to standalone.
-A non-autoexit nested orchestrator spawns a permitted leaf, receives its result and explicitly calls `subagent_done` before returning its own result.
+An autonomous custom nested orchestrator spawns a permitted leaf, yields normally, receives its asynchronous result and returns a reconciled outcome.
+Exit-producing completion/help tools refuse to leave while the leaf works.
 Native host observations verify the allowed/forbidden delegation tools and the explicit built-in tool allowlist without relying on model claims.
 Each child session verifies the exact model and thinking level.
 Owned completed children close, and the focused workspace and preexisting workspaces remain intact.
@@ -72,11 +73,29 @@ The public input regression covers multiple skills, native relative-reference lo
 The native proof requires the final autoexit child result to include a marker that appears only in its configured skill.
 The Pi 1.1.0 native run passed this assertion along with all existing parallel/context/capability checks.
 A subsequent public missing-skill child call delivered its precise missing-skill error asynchronously to the parent with exit code 1 and without executing the task.
-A nested orchestrator needs non-autoexit behavior and explicit completion so that its first waiting turn does not terminate it before leaf delivery.
-This is the upstream definition contract, not a new blanket nesting restriction.
+Autonomous completion now waits for owned work and queued outcomes to be processed.
+A delegator can yield normally without an explicit completion call.
 
 Native terminal reads expose textual widget/completion output, but do not establish pixel layout, physical keys, focus in a native client or Computer Use acceptance.
 Completion expansion, the widget toggle, Unicode, paste and resize behavior now have the human-observed acceptance recorded above.
 That acceptance does not establish the Computer Use bridge in ticket #41, the native failure/recovery criteria in ticket #42 or full deployment readiness.
 The new tests do not replace the separate lifecycle/ownership, preset-model or existing-backend proofs.
 Private transcripts, prompts, auth material and terminal evidence must not be committed.
+
+## Bundled recursive delegation (#57)
+
+All five bundled roles retain the four public lifecycle tools.
+The worker, scout, reviewer and visual-tester definitions retain their other tool restrictions and exact model/reasoning settings while allowing nested delegation.
+The public spawn tool accepts same-role calls.
+Custom project/global definitions still take precedence, including blanket spawning denial and individual tool denial.
+The public-boundary suite verifies the launch policy for every bundled role, same-role launch, effective widget denials and definition overrides.
+
+The existing native proof also accepts `PI_HERDR_BUNDLED_PROOF=baseline` or `PI_HERDR_BUNDLED_PROOF=nested` with the same session/auth variables above.
+Neither mode creates a custom worker definition.
+Baseline mode captures the actual bundled worker's effective denied lifecycle tools before policy changes.
+Nested mode launches an autonomous bundled worker, which launches another bundled worker and yields normally.
+Native transcripts must show exactly one parent launch call, automatic immediate-parent result delivery, and a reconciled final result without polling or manual completion.
+Host capability snapshots verify all four active lifecycle tools in both workers.
+The retained nested layout and caller mapping provide programmatic placement evidence for the separate layout ticket; they do not prove visual acceptance.
+The model-backed baseline and nested modes passed on 2026-11-01 against the respective prechange and candidate policies, preserving focus, unrelated workspaces, credentials and native history.
+This is native execution and host capability evidence, alongside component-level widget evidence; it is not a new rendered widget or physical keyboard acceptance claim.

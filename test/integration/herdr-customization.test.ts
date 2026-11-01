@@ -25,6 +25,7 @@ import { shellEscape } from "../../pi-extension/subagents/cmux.ts";
 const session = process.env.PI_HERDR_TEST_SESSION;
 const authPath = process.env.PI_HERDR_TEST_AUTH;
 const model = "openai-codex/gpt-6.1-sol";
+const bundledProof = process.env.PI_HERDR_BUNDLED_PROOF;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -135,7 +136,7 @@ test(
           `Run exactly: sleep 30; pwd -P > ${shellEscape(markerFor(name))}. Then return RESULT_${name} and apply any configured skill instructions to the final result.`,
       );
     const nestedTask = `Call subagent with name "Leaf39", agent "proof-leaf", cwd ${JSON.stringify(childCwd)}, task ${JSON.stringify(`Run exactly: sleep 20; pwd -P > ${shellEscape(markerFor("Leaf39"))}. Return exactly RESULT_Leaf39.`)}. While the leaf is still working, call subagent_done with {} and caller_ping with message "GUARD_PROOF_55". Both must return errors refusing exit because owned work is outstanding. Then write NESTED_CONTINUED_39 to ${join(dir, "nested-continued.txt")} immediately after that call. Wait for its asynchronous completion. End your initial turn normally while it works. Once its asynchronous result arrives, return exactly RECONCILED_NESTED_55 RESULT_Nested39 RESULT_Leaf39. Do not call subagent_done; ordinary autonomous completion must return the reconciled result.`;
-    const calls = [
+    let calls = [
       {
         name: names[0],
         agent: "proof-standalone",
@@ -148,6 +149,14 @@ test(
       { name: names[2], agent: "proof-fork", task: tasks[2], cwd: childCwd, fork: true },
       { name: names[3], agent: "proof-nested", task: nestedTask, cwd: project },
     ];
+    if (bundledProof) {
+      const leaf = `This is a bounded synthetic delegation acceptance task, not a repository change. Do not inspect user files, use todos, commit, or modify code. Run exactly sleep 35 using bash. Return exactly BUNDLED_LEAF_57.`;
+      const bundledTask =
+        bundledProof === "baseline"
+          ? "This is a bounded synthetic capability observation, not implementation. Do not inspect files, use todos, commit, or change code. Reply exactly BUNDLED_BASELINE_57 without calling tools."
+          : `This is a bounded synthetic delegation acceptance task, not implementation. Do not inspect files, use todos, commit, or change code. Call subagent with name BundledLeaf57, agent worker, task ${JSON.stringify(leaf)}. Then end your turn normally while the leaf works. Do not poll or call completion tools. Once its asynchronous result arrives, return exactly RECONCILED_BUNDLED_57 BUNDLED_LEAF_57.`;
+      calls = [{ name: "Bundled57", agent: "worker", task: bundledTask, cwd: project }];
+    }
     // A real prior native turn supplies context that must be copied only by fork.
     const childEnv = {
       ...process.env,
@@ -175,7 +184,9 @@ test(
       ],
       { cwd: project, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const task = `Synthetic isolated proof. Make these four public subagent calls with the exact supplied arguments, launching all before waiting: ${JSON.stringify(calls)}. Immediately after all launches write PARENT_CONTINUED_39 to ${parentMarker} using bash. Do independent parent work: calculate 17*19. End your turn and let upstream asynchronous results arrive. After all four independent results have arrived, write exactly RESULT_Standalone39 RESULT_Lineage39 RESULT_Fork39 RESULT_Nested39 RESULT_Leaf39 to ${delivered}. Do not inspect any user files, poll child sessions, interrupt, focus, or close panes.`;
+    const task = bundledProof
+      ? `Synthetic isolated proof. Make exactly this public subagent call: ${JSON.stringify(calls[0])}. End your turn while it works and await automatic delivery. Do not poll, interrupt, focus, or close panes. After its completed reconciled result arrives write that full result using bash to ${delivered}. Do not inspect user files.`
+      : `Synthetic isolated proof. Make these four public subagent calls with the exact supplied arguments, launching all before waiting: ${JSON.stringify(calls)}. Immediately after all launches write PARENT_CONTINUED_39 to ${parentMarker} using bash. Do independent parent work: calculate 17*19. End your turn and let upstream asynchronous results arrive. After all four independent results have arrived, write exactly RESULT_Standalone39 RESULT_Lineage39 RESULT_Fork39 RESULT_Nested39 RESULT_Leaf39 to ${delivered}. Do not inspect any user files, poll child sessions, interrupt, focus, or close panes.`;
     const taskFile = join(dir, "task.md");
     writeFileSync(taskFile, task);
     const launch = join(dir, "launch.sh");
@@ -212,6 +223,9 @@ test(
           agent: child.agent,
         });
       }
+      if (bundledProof && panes.length >= 3 && !existsSync(join(dir, "nested-layout.json"))) {
+        writeFileSync(join(dir, "nested-layout.json"), herdr(["pane", "layout", "--pane", pane]));
+      }
       observations.push({
         at: Date.now(),
         panes: panes.map((p: any) => ({ id: p.pane_id, cwd: p.cwd })),
@@ -226,6 +240,92 @@ test(
       existsSync(delivered),
       "parent must receive independent child completion before timeout",
     );
+    if (bundledProof) {
+      const entries = readFileSync(parentSession, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const result = entries.find((e) => e.customType === "subagent_result");
+      assert.ok(result, "bundled result delivered to root");
+      const caps = JSON.parse(
+        readFileSync(result.details.sessionFile + ".capabilities.json", "utf8"),
+      );
+      const lifecycle = ["subagent", "subagent_interrupt", "subagents_list", "subagent_resume"];
+      assert.equal(caps.role, "worker");
+      if (bundledProof === "baseline") {
+        for (const tool of lifecycle) {
+          assert.ok(!caps.activeTools.includes(tool));
+          assert.ok(caps.denied.split(",").includes(tool));
+        }
+      } else {
+        for (const tool of lifecycle) assert.ok(caps.activeTools.includes(tool), tool);
+        const child = readFileSync(result.details.sessionFile, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        const leaf = child.find((e) => e.customType === "subagent_result");
+        assert.ok(leaf, "bundled parent processes leaf result");
+        assert.match(result.content, /RECONCILED_BUNDLED_57 BUNDLED_LEAF_57/);
+        const toolCalls = child
+          .filter((e) => e.type === "message")
+          .flatMap((e) => e.message.content ?? [])
+          .filter((c) => c.type === "toolCall");
+        assert.deepEqual(
+          toolCalls.map((c) => c.name),
+          ["subagent"],
+          "one launch, ordinary yield and final completion without polling or manual done",
+        );
+        assert.equal(toolCalls[0].arguments.agent, "worker");
+        const leafCaps = JSON.parse(
+          readFileSync(leaf.details.sessionFile + ".capabilities.json", "utf8"),
+        );
+        assert.equal(leafCaps.role, "worker");
+        for (const tool of lifecycle) assert.ok(leafCaps.activeTools.includes(tool), tool);
+        assert.ok(existsSync(join(dir, "nested-layout.json")), "capture real nested layout");
+        writeFileSync(
+          join(dir, "native-mapping.json"),
+          JSON.stringify(
+            {
+              root: { pane, session: parentSession },
+              parent: { pane: caps.pane, session: result.details.sessionFile },
+              leaf: { pane: leafCaps.pane, session: leaf.details.sessionFile },
+            },
+            null,
+            2,
+          ),
+        );
+      }
+      assert.deepEqual(
+        json(["pane", "list", "--workspace", workspace]).panes.map((p: any) => p.pane_id),
+        [pane],
+      );
+      const after = json(["workspace", "list"]).workspaces;
+      assert.deepEqual(
+        after.filter((w: any) => w.focused).map((w: any) => w.workspace_id),
+        focusedBefore,
+      );
+      assert.ok(
+        before.every((w: any) => after.some((a: any) => a.workspace_id === w.workspace_id)),
+      );
+      assert.equal(createHash("sha256").update(readFileSync(authPath!)).digest("hex"), authHash);
+      writeFileSync(join(dir, "observations.json"), JSON.stringify(observations, null, 2));
+      writeFileSync(
+        join(dir, "result.json"),
+        JSON.stringify(
+          {
+            bundledProof,
+            capabilities: caps,
+            result,
+            focusPreserved: true,
+            authUnchanged: true,
+            nativeVisualAcceptance: false,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
     assert.ok(seenChildren.size >= 4, "distinct native direct children observed");
     for (const name of names.slice(0, 3)) {
       assert.equal(readFileSync(markerFor(name), "utf8").trim(), childCwd);

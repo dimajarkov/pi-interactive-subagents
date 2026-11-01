@@ -129,6 +129,32 @@ test("child delegation restrictions remove denied registered tools while preserv
     assert.ok(allowed.tools.has("subagent_resume"));
   }));
 
+test("each individual lifecycle denial removes only that tool from registration and the child widget", async () =>
+  isolated(async () => {
+    const lifecycle = ["subagent", "subagent_interrupt", "subagents_list", "subagent_resume"];
+    for (const denied of lifecycle) {
+      process.env.PI_DENY_TOOLS = denied;
+      const h = host();
+      extension(h.api);
+      childExtension(h.api);
+      for (const tool of lifecycle) assert.equal(h.tools.has(tool), tool !== denied);
+      let widget: any;
+      const ctx = {
+        sessionManager: { getSessionId: () => "policy-widget", getSessionFile: () => undefined },
+        ui: {
+          setWidget: (_name: string, component: any) => {
+            widget = component;
+          },
+        },
+      };
+      for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+      await h.shortcuts.get("ctrl+j").handler(ctx);
+      const text = widget(null, theme).render(180).join("\n");
+      assert.match(text, new RegExp(`denied: ${denied}(?:\\s|$)`));
+      for (const tool of lifecycle.filter((t) => t !== denied)) assert.ok(text.includes(tool));
+    }
+  }));
+
 test("registered completion renderer expands full summary and native session reference", async () =>
   isolated(() => {
     initTheme("dark", false);

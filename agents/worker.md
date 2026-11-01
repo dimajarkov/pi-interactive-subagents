@@ -1,11 +1,10 @@
 ---
 name: worker
 description: Implements tasks from todos - writes code, runs tests, commits with polished messages
-tools: read, bash, write, edit, todo
+tools: read, bash, write, edit, todo, subagent, subagent_interrupt, subagents_list, subagent_resume
 deny-tools: claude
 model: openai-codex/gpt-6.1-sol
 thinking: medium
-spawning: false
 auto-exit: true
 system-prompt: append
 ---

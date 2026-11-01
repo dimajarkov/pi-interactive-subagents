@@ -1627,20 +1627,6 @@ function createSubagentsRuntime() {
           const ownerSignal = observerSignal();
           if (ownerSignal.aborted)
             throw new Error("Subagent owner is stopped; use the active native session");
-          // Prevent self-spawning (e.g. planner spawning another planner)
-          const currentAgent = process.env.PI_SUBAGENT_AGENT;
-          if (params.agent && currentAgent && params.agent === currentAgent) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `You are the ${currentAgent} agent — do not start another ${currentAgent}. You were spawned to do this work yourself. Complete the task directly.`,
-                },
-              ],
-              details: { error: "self-spawn blocked" },
-            };
-          }
-
           // Validate prerequisites
           if (!isMuxAvailable()) {
             return muxUnavailableResult();

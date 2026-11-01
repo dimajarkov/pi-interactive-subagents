@@ -435,6 +435,71 @@ test("unavailable exact specialist models fail before creating a child and never
     assert.equal(JSON.parse(readFileSync(h.state, "utf8")).sequence, 0);
   }));
 
+test("a bundled worker can launch another worker through the public delegation tool", async () =>
+  fixture(async (h) => {
+    h.configure({ fail: null });
+    process.env.PI_SUBAGENT_AGENT = "worker";
+    const r = await h.tools
+      .get("subagent")
+      .execute(
+        "same-role",
+        { name: "Nested worker", agent: "worker", task: "Synthetic same-role task" },
+        undefined,
+        undefined,
+        h.ctx,
+      );
+    assert.equal(r.details.status, "started");
+    assert.match(readFileSync(r.details.launchScriptFile, "utf8"), /PI_SUBAGENT_AGENT='worker'/);
+    writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+  }));
+
+test("project and global role overrides retain spawning and individual-denial policy at launch", async () =>
+  fixture(async (h) => {
+    h.configure({ fail: null });
+    const previousCwd = process.cwd();
+    process.chdir(h.dir);
+    const global = join(h.dir, "config", "agents");
+    const project = join(h.dir, ".pi", "agents");
+    mkdirSync(global, { recursive: true });
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(global, "worker.md"),
+      "---\nname: worker\ntools: read,subagent,subagent_interrupt,subagents_list,subagent_resume\nspawning: false\ndeny-tools: claude\n---\nSynthetic global role.",
+    );
+    writeFileSync(
+      join(project, "worker.md"),
+      "---\nname: worker\ntools: read,subagent,subagent_interrupt,subagents_list,subagent_resume\ndeny-tools: subagent_resume\n---\nSynthetic project role.",
+    );
+    try {
+      const launch = async (name: string) => {
+        const r = await h.tools
+          .get("subagent")
+          .execute(
+            name,
+            { name, agent: "worker", task: "Synthetic policy task" },
+            undefined,
+            undefined,
+            h.ctx,
+          );
+        const script = readFileSync(r.details.launchScriptFile, "utf8");
+        writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+        return script;
+      };
+      const local = await launch("Project restriction");
+      assert.match(local, /PI_DENY_TOOLS='subagent_resume'/);
+      assert.doesNotMatch(local, /PI_DENY_TOOLS='[^']*claude/);
+      rmSync(join(project, "worker.md"));
+      const fallback = await launch("Global restriction");
+      const denied = fallback.match(/PI_DENY_TOOLS='([^']+)'/)![1].split(",");
+      assert.deepEqual(
+        denied.sort(),
+        ["claude", "subagent", "subagent_interrupt", "subagent_resume", "subagents_list"].sort(),
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
+  }));
+
 test("all five specialist launches pass their exact medium model to Pi without mutating the parent", async () =>
   fixture(async (h) => {
     h.configure({ fail: null });
@@ -465,6 +530,22 @@ test("all five specialist launches pass their exact medium model to Pi without m
         ),
       );
       assert.ok(!script.includes("exec claude"));
+      const allowlist = script.match(/--tools '([^']+)'/)?.[1].split(",");
+      const denied = script.match(/PI_DENY_TOOLS='([^']+)'/)?.[1].split(",") ?? [];
+      for (const tool of ["subagent", "subagent_interrupt", "subagents_list", "subagent_resume"]) {
+        assert.ok(!allowlist || allowlist.includes(tool), `${role} allows ${tool}`);
+        assert.ok(!denied.includes(tool), `${role} does not deny ${tool}`);
+      }
+      if (["scout", "reviewer"].includes(role)) {
+        assert.ok(!allowlist?.includes("write"));
+        assert.ok(!allowlist?.includes("edit"));
+      }
+      if (["worker", "scout"].includes(role)) assert.ok(denied.includes("claude"));
+      if (role === "visual-tester") {
+        assert.ok(allowlist?.includes("codex_computer_use"));
+        assert.ok(!allowlist?.includes("bash"));
+        assert.match(script, /PI_SUBAGENT_SKILLS='browser-routing'/);
+      }
       if (role === "worker") assert.match(script, /--tools '[^']*\btodo\b/);
       assert.match(script, /herdr-control\.ts.*subagent-done\.ts/);
       writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));

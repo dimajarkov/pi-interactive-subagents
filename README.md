@@ -422,15 +422,18 @@ deny-tools: subagent
 ---
 ```
 
-### Recommended Configuration
+### Bundled delegation policy
 
-| Agent      | `spawning`  | Rationale                                    |
-| ---------- | ----------- | -------------------------------------------- |
-| planner    | _(default)_ | Legitimately spawns scouts for investigation |
-| worker     | `false`     | Should implement tasks, not delegate         |
-| researcher | `false`     | Should research, not spawn                   |
-| reviewer   | `false`     | Should review, not spawn                     |
-| scout      | `false`     | Should gather context, not spawn             |
+All bundled roles (planner, worker, scout, reviewer and visual-tester) can use `subagent`, `subagent_interrupt`, `subagents_list` and `subagent_resume`.
+Same-role delegation, including worker to worker, is supported.
+An autonomous delegator may end its turn while its children work; their asynchronous results return to that immediate parent, which reconciles them before reporting upward.
+No polling or explicit completion call is needed.
+
+Project definitions still shadow global definitions, which shadow bundled defaults.
+An explicit custom `spawning: false` denies all four lifecycle tools, and `deny-tools` can deny individual operations.
+Explicit `tools` allowlists still constrain the selected role.
+The child tools widget displays its registered tools and intentional denials.
+Existing role-specific tools, exact models, reasoning levels, Claude restrictions and visual-host requirements remain unchanged.
 
 ---
 
