@@ -927,10 +927,10 @@ test(
         const work = (name: string, result: string) =>
           `Run only this synthetic workload. Run exactly ${shellEscape(process.execPath)} ${shellEscape(join(dir, "interrupt-barrier.cjs"))} ${shellEscape(dir)} ${name} using bash with timeout 360 seconds. After successful release: ${explicitCompletion58(result)} Do not inspect user files.`;
         const leafTask = `Call subagent exactly once with name Deeper58, agent interrupt-deeper58, task ${JSON.stringify(work("Deeper58", "DEPTH_RESULT_58"))}. Then run exactly ${shellEscape(process.execPath)} ${shellEscape(join(dir, "interrupt-barrier.cjs"))} ${shellEscape(dir)} LeafActive58 using bash with timeout 360 seconds. This bounded synthetic workload may be interrupted intentionally. Never relaunch Deeper58. After its actual asynchronous result arrives, reconcile DEPTH_RESULT_58. ${explicitCompletion58("RECONCILED_LEAF_58 DEPTH_RESULT_58")} Never call completion while descendants remain outstanding.`;
-        const aTask = `Call subagent exactly once with name InterruptLeaf58, agent interrupt-leaf58, task ${JSON.stringify(leafTask)}. End your turn normally while it works. Do not poll or call completion tools while descendants remain outstanding. Only when its real final asynchronous result arrives, reconcile it. ${explicitCompletion58("RECONCILED_INTERRUPT_A_58 RECONCILED_LEAF_58 DEPTH_RESULT_58")} Later exact guidance may request public interruption of that same original child; obey it without relaunching or closing anything.`;
+        const aTask = `Call subagent exactly once with name InterruptLeaf58, agent interrupt-leaf58, task ${JSON.stringify(leafTask)}. End your turn normally while it works. Do not poll or call completion tools while descendants remain outstanding. When its FIRST real asynchronous result arrives, reconcile it, say FIRST_LEAF_RECONCILED_58 RECONCILED_LEAF_58 DEPTH_RESULT_58 and end your turn normally. Remain interactive and do NOT call subagent_done yet: a later controller instruction will request one resume of this same original leaf. After that resumed child finishes, follow that later instruction for final reconciliation and explicit completion. Later exact guidance may request public interruption of that same original child; obey it without relaunching or closing anything.`;
         return `Synthetic isolated nested interruption proof. Launch InterruptA58 using agent interrupt-parent58 with task ${JSON.stringify(aTask)}, then launch InterruptB58 using agent interrupt-b58 with task ${JSON.stringify(work("InterruptB58", "INTERRUPT_B_RESULT_58"))}, before waiting. End your turn normally, receive independent asynchronous outcomes and report them honestly. Do not poll, inspect sessions, interrupt, resume, relaunch or close any pane yourself.`;
       },
-      ({ dir, project }) => {
+      ({ dir, config, project }) => {
         for (const [name, spawning] of [
           ["interrupt-parent58", true],
           ["interrupt-leaf58", true],
@@ -942,6 +942,15 @@ test(
             `---\nname: ${name}\nmodel: openai-codex/gpt-6.1-sol\nthinking: medium\nauto-exit: false\nspawning: ${spawning}\ntools: bash,read,subagent,subagent_interrupt,subagents_list,subagent_resume\n---\nFollow only the exact synthetic task and guidance. Preserve original owned descendants and wait for actual asynchronous outcomes before explicit completion. Once work is settled, emit the requested summary text immediately followed by the actual subagent_done tool call in the SAME assistant response, without ending the turn between them. A text-only response or future promise is incomplete.\n`,
           );
         }
+        const executionObserver = join(dir, "nested-execution-observer.ts");
+        writeFileSync(
+          executionObserver,
+          `import {writeFileSync} from "node:fs"; export default function(pi) { pi.on("session_start",(_e,ctx)=>{if(process.env.PI_SUBAGENT_AGENT !== "interrupt-leaf58")return;writeFileSync(${JSON.stringify(join(dir, "leaf-execution-"))}+process.env.PI_SUBAGENT_ID+".json",JSON.stringify({id:process.env.PI_SUBAGENT_ID,nativeId:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),role:process.env.PI_SUBAGENT_AGENT,activity:process.env.PI_SUBAGENT_ACTIVITY_FILE,exitFile:process.env.PI_SUBAGENT_EXIT_FILE,autoExit:process.env.PI_SUBAGENT_AUTO_EXIT,tools:pi.getActiveTools()}),{mode:0o600});});}`,
+        );
+        const settingsPath = join(config, "settings.json");
+        const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+        settings.extensions.push(executionObserver);
+        writeFileSync(settingsPath, JSON.stringify(settings));
         writeFileSync(
           join(dir, "interrupt-barrier.cjs"),
           `const {watch,existsSync,writeFileSync}=require("node:fs"); const [dir,name]=process.argv.slice(2); const timer=setTimeout(()=>{w.close();process.exit(1)},350000); const check=()=>{if(existsSync(dir+"/"+name+".release")){clearTimeout(timer);w.close();writeFileSync(dir+"/"+name+".finished","finished\\n");process.stdout.write("RELEASED_"+name+"\\n")}}; const w=watch(dir,check); writeFileSync(dir+"/"+name+".ready","ready\\n"); check();`,
@@ -1124,6 +1133,166 @@ test(
         "follow-up never duplicates the descendant",
       );
       writeFileSync(join(h.dir, "Deeper58.release"), "release\n");
+      await waitFor(
+        () => results(a.details.sessionFile).length === 1,
+        "original leaf delivers only to its immediate parent A",
+      );
+      assert.equal(results(a.details.sessionFile)[0].details.exitCode, 0);
+      assert.equal(results(a.details.sessionFile)[0].details.sessionFile, leaf.details.sessionFile);
+      await waitFor(
+        () =>
+          !h
+            .panes()
+            .some((p: any) =>
+              [
+                leafRecord.child.job.terminal.pane_id,
+                deeperRecord.child.job.terminal.pane_id,
+              ].includes(p.pane_id),
+            ),
+        "original leaf and deeper managed cleanup before nested resume",
+        30_000,
+      );
+      await waitFor(
+        () =>
+          messages(a.details.sessionFile).some(
+            (m) =>
+              m.role === "assistant" &&
+              m.stopReason === "stop" &&
+              JSON.stringify(m.content).includes("FIRST_LEAF_RECONCILED_58"),
+          ),
+        "A reconciles the first leaf and remains interactive",
+      );
+      await waitFor(
+        async () => {
+          const current = await managed.get(aRecord.child.job);
+          return current.agent && !current.busy;
+        },
+        "A idle before exact nested resume guidance",
+        20_000,
+      );
+      assert.equal(
+        results(h.parentSession).length,
+        0,
+        "A remains interactive and B remains active before resume",
+      );
+      const originalExecution = JSON.parse(
+        readFileSync(join(h.dir, "leaf-execution-" + leaf.details.id + ".json"), "utf8"),
+      );
+      const completedPrefix = readFileSync(leaf.details.sessionFile, "utf8");
+      const resumeMessage = `This resumed execution is autonomous with autoExit true. Your prior assigned workload and descendant have settled; do not restart them or spawn another child. Run exactly ${shellEscape(process.execPath)} ${shellEscape(join(h.dir, "interrupt-barrier.cjs"))} ${shellEscape(h.dir)} ResumedLeaf58 using bash with timeout 360 seconds. After successful release, recall the original RECONCILED_LEAF_58 and DEPTH_RESULT_58 from this native conversation and return exactly NESTED_RESUME_58 RECONCILED_LEAF_58 DEPTH_RESULT_58. For THIS resumed execution do not call subagent_done or caller_ping; return normally for autonomous completion. Do not inspect user files.`;
+      const resumeCall = {
+        sessionPath: leaf.details.sessionFile,
+        name: "ResumedLeaf58",
+        autoExit: true,
+        message: resumeMessage,
+      };
+      const resumeControl = await managed.prompt(
+        aRecord.child.job,
+        `Now call public subagent_resume exactly once with these arguments: ${JSON.stringify(resumeCall)}. This is the original leaf conversation you already reconciled. End your turn normally while the resumed execution works. Do not poll, interrupt, close, relaunch or complete early. After its real asynchronous final result arrives, reconcile BOTH leaf executions, then ${explicitCompletion58("RECONCILED_INTERRUPT_A_58 RECONCILED_LEAF_58 DEPTH_RESULT_58 NESTED_RESUME_58")}`,
+      );
+      const resumed = await waitFor(
+        () =>
+          messages(a.details.sessionFile).find(
+            (m) =>
+              m.role === "toolResult" &&
+              m.toolName === "subagent_resume" &&
+              !m.isError &&
+              m.details.name === "ResumedLeaf58",
+          ),
+        "nested public resume acknowledgement from A",
+      );
+      await waitFor(
+        () => existsSync(join(h.dir, "ResumedLeaf58.ready")),
+        "resumed original leaf bounded native workload",
+      );
+      const resumedRecord = readdirSync(a.details.sessionFile + ".delegations")
+        .filter((f) => f.endsWith(".json"))
+        .map((f) =>
+          JSON.parse(readFileSync(join(a.details.sessionFile + ".delegations", f), "utf8")),
+        )
+        .find((r) => r.state === "running" && r.child?.sessionFile === leaf.details.sessionFile);
+      assert.ok(resumedRecord?.child?.job);
+      evidence.resumed = { resumed, resumedRecord, resumeControl };
+      const restoredExecution = JSON.parse(
+        readFileSync(join(h.dir, "leaf-execution-" + resumed.details.id + ".json"), "utf8"),
+      );
+      assert.equal(entries(leaf.details.sessionFile)[0].id, nativeHeader.id);
+      assert.equal(restoredExecution.nativeId, originalExecution.nativeId);
+      assert.equal(restoredExecution.file, leaf.details.sessionFile);
+      assert.equal(restoredExecution.role, originalExecution.role);
+      assert.ok(
+        readFileSync(leaf.details.sessionFile, "utf8").startsWith(completedPrefix),
+        "nested resume preserves completed original history prefix",
+      );
+      assert.notEqual(resumed.details.id, leaf.details.id);
+      assert.notEqual(resumedRecord.id, leafRecord.id, "fresh durable child ownership identity");
+      assert.notEqual(resumedRecord.child.job.job_id, leafRecord.child.job.job_id);
+      assert.notEqual(
+        resumedRecord.child.job.terminal.terminal_id,
+        leafRecord.child.job.terminal.terminal_id,
+      );
+      assert.ok(originalExecution.activity && restoredExecution.activity);
+      assert.ok(originalExecution.exitFile && restoredExecution.exitFile);
+      assert.notEqual(restoredExecution.activity, originalExecution.activity);
+      assert.notEqual(restoredExecution.exitFile, originalExecution.exitFile);
+      assert.equal(restoredExecution.autoExit, "1");
+      assert.deepEqual(
+        [...restoredExecution.tools].sort(),
+        [...originalExecution.tools].sort(),
+        "nested resume restores the original effective public tool policy",
+      );
+      const resumedCurrent = await managed.get(resumedRecord.child.job);
+      assert.equal(resumedCurrent.phase, "owned");
+      assert.ok(resumedCurrent.agent && resumedCurrent.busy);
+      const stillB = await managed.get(bRecord.child.job);
+      assert.equal(stillB.phase, "owned");
+      assert.deepEqual(stillB.condition, bAfter.condition);
+      assert.deepEqual(stillB.agent, bAfter.agent);
+      assert.ok(stillB.busy, "original independent B remains active across nested resume");
+      const resumedLayout = h.json(["pane", "layout", "--pane", h.parent]).layout;
+      const rect = (id: string) => {
+        const p = resumedLayout.panes.find((p: any) => p.pane_id === id);
+        assert.ok(p);
+        return p.rect;
+      };
+      const masterRect = rect(h.parent);
+      const aRect = rect(aRecord.child.job.terminal.pane_id);
+      const bRect = rect(bRecord.child.job.terminal.pane_id);
+      const resumedRect = rect(resumedRecord.child.job.terminal.pane_id);
+      assert.ok(masterRect.x + masterRect.width <= aRect.x && aRect.x + aRect.width <= bRect.x);
+      assert.equal(
+        resumedRect.x,
+        aRect.x,
+        "resumed descendant returns to A's original branch column",
+      );
+      assert.equal(resumedRect.width, aRect.width);
+      assert.ok(
+        resumedRect.y >= aRect.y + aRect.height,
+        "resumed leaf stacks below its original parent",
+      );
+      assert.equal(resumedLayout.panes.length, 4, "nested resume creates no extra root column");
+      assert.equal(resumedLayout.focused_pane_id, h.parent);
+      for (const p of resumedLayout.panes) assert.ok(p.rect.width >= 40 && p.rect.height >= 12);
+      assert.equal(results(h.parentSession).length, 0);
+      assert.equal(
+        results(a.details.sessionFile).length,
+        1,
+        "resumed work remains pending while barrier is active",
+      );
+      evidence.resumed = {
+        ...evidence.resumed,
+        originalExecution,
+        restoredExecution,
+        resumedCurrent,
+        stillB,
+        resumedLayout,
+      };
+      writeFileSync(
+        join(h.dir, "nested-interruption-evidence.json"),
+        JSON.stringify(evidence, null, 2),
+        { mode: 0o600 },
+      );
+      writeFileSync(join(h.dir, "ResumedLeaf58.release"), "release\n");
       writeFileSync(join(h.dir, "InterruptB58.release"), "release\n");
       await waitFor(
         () => results(h.parentSession).length === 2,
@@ -1143,15 +1312,38 @@ test(
         rootResults.find((r) => r.details.name === "InterruptB58").content,
         /INTERRUPT_B_RESULT_58/,
       );
+      assert.match(
+        rootResults.find((r) => r.details.name === "InterruptA58").content,
+        /NESTED_RESUME_58/,
+      );
       assert.deepEqual(
         results(a.details.sessionFile).map((r) => r.details.name),
-        ["InterruptLeaf58"],
+        ["InterruptLeaf58", "ResumedLeaf58"],
       );
       assert.deepEqual(
         results(leaf.details.sessionFile).map((r) => r.details.name),
         ["Deeper58"],
       );
       assert.equal(results(a.details.sessionFile)[0].details.sessionFile, leaf.details.sessionFile);
+      assert.equal(results(a.details.sessionFile)[1].details.sessionFile, leaf.details.sessionFile);
+      assert.equal(results(a.details.sessionFile)[1].details.exitCode, 0);
+      assert.match(
+        results(a.details.sessionFile)[1].content,
+        /NESTED_RESUME_58 RECONCILED_LEAF_58 DEPTH_RESULT_58/,
+      );
+      const resumedEntries = readFileSync(leaf.details.sessionFile, "utf8")
+        .slice(completedPrefix.length)
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      assert.ok(
+        !resumedEntries
+          .filter((e) => e.type === "message")
+          .flatMap((e) => e.message.content ?? [])
+          .some((c) => c.type === "toolCall" && c.name === "subagent_done"),
+        "resumed autonomous execution needs no manual completion tool",
+      );
       assert.equal(
         results(leaf.details.sessionFile)[0].details.sessionFile,
         deeper.details.sessionFile,
@@ -1174,6 +1366,13 @@ test(
         immediateParentRouting: true,
         nativeHistoryPreserved: true,
         originalDescendantPreserved: true,
+        nestedResume: true,
+        resumedJournal: JSON.parse(
+          readFileSync(
+            join(a.details.sessionFile + ".delegations", resumedRecord.id + ".json"),
+            "utf8",
+          ),
+        ),
       };
       h.verify();
     } catch (error) {
@@ -1183,6 +1382,7 @@ test(
         ["InterruptB58", evidence.original?.bRecord],
         ["InterruptLeaf58", evidence.original?.leafRecord],
         ["Deeper58", evidence.original?.deeperRecord],
+        ["ResumedLeaf58", evidence.resumed?.resumedRecord],
       ] as const) {
         if (record?.child?.job)
           evidence.retained.push({
