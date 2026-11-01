@@ -24,8 +24,8 @@ async function fixture(fn: (h: any) => Promise<void>, supported = true) {
           continue;
         }
         let result: any;
-        if (req.method === "terminal.job.capabilities") {
-          if (!supported) {
+        if (req.method === "terminal.job.branch_capabilities") {
+          if (!supported || state.branchSupported === false) {
             stream.end(
               JSON.stringify({
                 id: req.id,
@@ -56,7 +56,7 @@ async function fixture(fn: (h: any) => Promise<void>, supported = true) {
               launch_id: "launch",
             },
           };
-        else if (req.method === "terminal.job.launch") {
+        else if (req.method === "terminal.job.launch_branch") {
           assert.match(readFileSync(req.params.argv[1], "utf8"), /HERDR_PANE_ID/);
           result = {
             type: "managed_terminal",
@@ -128,7 +128,13 @@ async function fixture(fn: (h: any) => Promise<void>, supported = true) {
   });
   await new Promise<void>((r) => server.listen(socket, r));
   try {
-    await fn({ dir, calls, state, client: new HerdrParent(socket, "parent") });
+    await fn({
+      dir,
+      calls,
+      state,
+      client: new HerdrParent(socket, "parent"),
+      stopServer: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    });
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     rmSync(dir, { recursive: true, force: true });
@@ -139,9 +145,109 @@ test("unsupported managed control fails before allocating or writing a launch sc
     await assert.rejects(h.client.prepare(), /unknown_method/);
     assert.deepEqual(
       h.calls.map((x: any) => x.method),
-      ["terminal.job.capabilities"],
+      ["terminal.job.branch_capabilities"],
     );
   }, false));
+test("a server without guarded branch placement is refused before writing or allocating", () =>
+  fixture(async (h) => {
+    h.state.branchSupported = false;
+    const scriptPath = join(h.dir, "unsupported-branch.sh");
+    await assert.rejects(
+      h.client.launch({ name: "Nested child", cwd: h.dir, scriptPath, command: "pi" }),
+      /branch|unsupported/i,
+    );
+    assert.equal(existsSync(scriptPath), false);
+    assert.equal(h.calls.filter((x: any) => x.method.includes("launch")).length, 0);
+  }));
+test("a caller-supplied terminal condition cannot bypass branch capability preflight", () =>
+  fixture(async (h) => {
+    h.state.branchSupported = false;
+    const scriptPath = join(h.dir, "unverified-parent.sh");
+    await assert.rejects(
+      h.client.launch(
+        { name: "Unverified", cwd: h.dir, scriptPath, command: "pi" },
+        { pane_id: "parent", tab_id: "tab", terminal_id: "terminal", launch_id: "launch" },
+      ),
+      /unsupported/i,
+    );
+    assert.equal(existsSync(scriptPath), false);
+    assert.equal(
+      h.calls.some((x: any) => x.method.includes("launch")),
+      false,
+    );
+  }));
+test("managed children use server-owned branch placement and inherit the verified master condition", () =>
+  fixture(async (h) => {
+    await h.client.launch({
+      name: "Branch A",
+      cwd: h.dir,
+      scriptPath: join(h.dir, "branch.sh"),
+      command: "pi",
+    });
+    const launch = h.calls.find((x: any) => x.method === "terminal.job.launch_branch");
+    assert.ok(launch, "guarded branch allocation must replace ordinary leaf splitting");
+    assert.deepEqual(launch.params.root, launch.params.parent);
+    assert.equal("direction" in launch.params, false);
+    assert.deepEqual(JSON.parse(launch.params.env.PI_HERDR_BRANCH_ROOT), launch.params.root);
+  }));
+test("a descendant preserves its master identity while its immediate caller remains the parent", () =>
+  fixture(async (h) => {
+    const root = {
+      pane_id: "master",
+      tab_id: "tab",
+      terminal_id: "master-terminal",
+      launch_id: "master-launch",
+    };
+    const child = new HerdrParent(h.client.socket, "parent", root);
+    await child.launch({
+      name: "Grandchild",
+      cwd: h.dir,
+      scriptPath: join(h.dir, "grandchild.sh"),
+      command: "pi",
+      env: { PI_HERDR_BRANCH_ROOT: "stale caller value" },
+    });
+    const launch = h.calls.find((x: any) => x.method === "terminal.job.launch_branch");
+    assert.equal(launch.params.parent.pane_id, "parent");
+    assert.deepEqual(launch.params.root, root);
+    assert.deepEqual(JSON.parse(launch.params.env.PI_HERDR_BRANCH_ROOT), root);
+  }));
+test("native caller discovery retains branch lineage and refuses malformed inherited identity", () =>
+  fixture(async (h) => {
+    const previousEnvironment = { ...process.env };
+    const root = {
+      pane_id: "master",
+      tab_id: "tab",
+      terminal_id: "master-terminal",
+      launch_id: "master-launch",
+    };
+    writeFileSync(
+      join(h.dir, "herdr"),
+      `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ server: { running: true, session: "branch-fixture", socket: h.client.socket } }))});\n`,
+      { mode: 0o700 },
+    );
+    try {
+      Object.assign(process.env, {
+        HERDR_SESSION: "branch-fixture",
+        HERDR_PANE_ID: "parent",
+        PI_HERDR_BRANCH_ROOT: JSON.stringify(root),
+        PATH: h.dir + ":" + previousEnvironment.PATH,
+      });
+      await HerdrParent.discover().launch({
+        name: "Discovered descendant",
+        cwd: h.dir,
+        scriptPath: join(h.dir, "discovered.sh"),
+        command: "pi",
+      });
+      assert.deepEqual(
+        h.calls.find((x: any) => x.method === "terminal.job.launch_branch").params.root,
+        root,
+      );
+      process.env.PI_HERDR_BRANCH_ROOT = JSON.stringify({ ...root, launch_id: "" });
+      assert.throws(() => HerdrParent.discover(), /branch.*identity|branch.*condition/i);
+    } finally {
+      process.env = previousEnvironment;
+    }
+  }));
 test("managed launch writes the complete private script before direct argv allocation and binds child identity from Herdr", () =>
   fixture(async (h) => {
     const job = await h.client.launch({
@@ -152,14 +258,14 @@ test("managed launch writes the complete private script before direct argv alloc
       env: { PI_SUBAGENT_ID: "child-id" },
     });
     assert.equal(job.condition.terminal.pane_id, "child");
-    const launch = h.calls.find((x: any) => x.method === "terminal.job.launch");
+    const launch = h.calls.find((x: any) => x.method === "terminal.job.launch_branch");
     assert.deepEqual(launch.params.argv, ["/bin/bash", join(h.dir, "child.sh")]);
     assert.equal(launch.params.env.PI_SUBAGENT_ID, "child-id");
     assert.equal(launch.params.cwd, h.dir);
     assert.equal(launch.params.label, "Owned child");
     assert.deepEqual(
       h.calls.map((x: any) => x.method),
-      ["terminal.job.capabilities", "terminal.condition", "terminal.job.launch"],
+      ["terminal.job.branch_capabilities", "terminal.condition", "terminal.job.launch_branch"],
     );
   }));
 
@@ -262,10 +368,10 @@ test("native completion arriving during a successful exited-job response wins an
 test("a launch connection failure before dispatch allocates no phantom child or uncertain receipt", () =>
   fixture(async (h) => {
     const parent = await h.client.prepare();
-    const unavailable = new HerdrParent(join(h.dir, "vanished-server.sock"), "parent");
+    await h.stopServer();
     const scriptPath = join(h.dir, "never-dispatched.sh");
     await assert.rejects(
-      unavailable.launch({ name: "No server", cwd: h.dir, scriptPath, command: "pi" }, parent),
+      h.client.launch({ name: "No server", cwd: h.dir, scriptPath, command: "pi" }, parent),
       (error: any) => {
         assert.equal(error.name, "HerdrRequestNotDispatched");
         assert.match(error.message, /no request dispatched/);
@@ -274,7 +380,7 @@ test("a launch connection failure before dispatch allocates no phantom child or 
     );
     assert.equal(existsSync(scriptPath + ".lifecycle.json"), false);
     assert.equal(
-      h.calls.some((call: any) => call.method === "terminal.job.launch"),
+      h.calls.some((call: any) => call.method === "terminal.job.launch_branch"),
       false,
     );
   }));

@@ -245,7 +245,7 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
             request = JSON.parse(buffer.slice(0, end));
           buffer = buffer.slice(end + 1);
           let result: any;
-          if (request.method === "terminal.job.capabilities")
+          if (request.method === "terminal.job.branch_capabilities")
             result = {
               type: "managed_terminal_capabilities",
               job_ownership: true,
@@ -268,7 +268,7 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
                 launch_id: "parent-launch",
               },
             };
-          if (request.method === "terminal.job.launch") {
+          if (request.method === "terminal.job.launch_branch") {
             managedSequence++;
             result = {
               type: "managed_terminal",

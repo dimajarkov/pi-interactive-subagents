@@ -1,5 +1,8 @@
 /** Opt-in native Pi/Herdr proof. Requires an explicitly authorized named session.
  * PI_HERDR_TEST_SESSION=handovers PI_HERDR_TEST_AUTH=/path/to/auth.json
+ * PI_HERDR_BUNDLED_PROOF=layout opts into the autonomous bundled layout proof.
+ * PI_HERDR_BUNDLED_PROOF=layout-manual uses explicitly enabled non-autoexit agents.
+ * PI_HERDR_LAYOUT_HOLD=1 retains its seven-pane stage until layout.release is created.
  * node --test test/integration/herdr-customization.test.ts
  * Evidence and native sessions stay in an owner-private temporary directory.
  */
@@ -16,6 +19,7 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  watch,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -26,6 +30,13 @@ const session = process.env.PI_HERDR_TEST_SESSION;
 const authPath = process.env.PI_HERDR_TEST_AUTH;
 const model = "openai-codex/gpt-6.1-sol";
 const bundledProof = process.env.PI_HERDR_BUNDLED_PROOF;
+const manualLayout = bundledProof === "layout-manual";
+const layoutProof = bundledProof === "layout" || manualLayout;
+const layoutRole = manualLayout ? "proof-layout-manual" : "worker";
+const layoutCompletion = (result: string) =>
+  manualLayout
+    ? `First send an assistant message containing exactly ${result}, then call subagent_done with {}. This explicit completion is allowed ONLY after the assigned workload and every owned descendant result have been successfully processed. Do not call completion tools while work remains outstanding.`
+    : `Return exactly ${result}. Do not call completion tools; complete autonomously.`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -69,7 +80,7 @@ test(
     // Observe the native public host capability surface, not model self-report.
     writeFileSync(
       join(config, "observer.ts"),
-      `import { writeFileSync } from "node:fs";\nexport default function(pi) { pi.on("session_start", (_event, ctx) => { const file = ctx.sessionManager.getSessionFile(); if (file) writeFileSync(file + ".capabilities.json", JSON.stringify({ cwd: ctx.cwd, activeTools: pi.getActiveTools(), allTools: pi.getAllTools().map(t => t.name), role: process.env.PI_SUBAGENT_AGENT, pane: process.env.HERDR_PANE_ID, denied: process.env.PI_DENY_TOOLS })); }); }\n`,
+      `import { writeFileSync } from "node:fs";\nexport default function(pi) { pi.on("session_start", (_event, ctx) => { const file = ctx.sessionManager.getSessionFile(); if (file) writeFileSync(file + ".capabilities.json", JSON.stringify({ cwd: ctx.cwd, activeTools: pi.getActiveTools(), allTools: pi.getAllTools().map(t => t.name), role: process.env.PI_SUBAGENT_AGENT, pane: process.env.HERDR_PANE_ID, denied: process.env.PI_DENY_TOOLS, autoExit: process.env.PI_SUBAGENT_AUTO_EXIT ?? null })); }); }\n`,
     );
     mkdirSync(join(config, "agents"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "skills", "native-proof"), { recursive: true, mode: 0o700 });
@@ -87,6 +98,12 @@ test(
     agent("proof-fork", "session-mode: standalone\nspawning: false", synthetic);
     agent("proof-nested", "session-mode: standalone\nspawning: true", synthetic);
     agent("proof-leaf", "session-mode: standalone\nspawning: false", synthetic);
+    if (manualLayout) {
+      writeFileSync(
+        join(project, ".pi", "agents", "proof-layout-manual.md"),
+        `---\nname: proof-layout-manual\nmodel: ${model}\nthinking: medium\nsession-mode: standalone\nauto-exit: false\nspawning: true\ntools: bash,read,subagent,subagent_interrupt,subagents_list,subagent_resume\n---\n${synthetic} Remain interactive while work is outstanding. After successfully completing your exact assigned task and reconciling every owned descendant, emit the requested assistant summary and then call subagent_done with {}.\n`,
+      );
+    }
     // Default definition cwd is deliberately overridden by the public call.
     agent(
       "proof-standalone",
@@ -100,6 +117,15 @@ test(
       });
     const json = (args: string[]) => JSON.parse(herdr(args)).result;
     const before = json(["workspace", "list"]).workspaces;
+    const unrelatedPanes = layoutProof
+      ? before.map((w: any) => ({
+          workspace: w.workspace_id,
+          panes: json(["pane", "list", "--workspace", w.workspace_id]).panes.map((p: any) => ({
+            pane: p.pane_id,
+            terminal: p.terminal_id,
+          })),
+        }))
+      : [];
     const focusedBefore = before.filter((w: any) => w.focused).map((w: any) => w.workspace_id);
     const created = json([
       "workspace",
@@ -149,7 +175,40 @@ test(
       { name: names[2], agent: "proof-fork", task: tasks[2], cwd: childCwd, fork: true },
       { name: names[3], agent: "proof-nested", task: nestedTask, cwd: project },
     ];
-    if (bundledProof) {
+    if (layoutProof) {
+      // These bounded file barriers keep synthetic workloads observable. Agents
+      // still yield normally and receive results through native Pi delivery.
+      const barrier = join(dir, "layout-barrier.cjs");
+      writeFileSync(
+        barrier,
+        `const { watch, existsSync, writeFileSync } = require("node:fs");
+const [dir, name] = process.argv.slice(2);
+const release = dir + "/" + name + ".release";
+const timer = setTimeout(() => { watcher.close(); console.error("Synthetic barrier expired: " + name); process.exit(1); }, 420000);
+const check = () => { if (existsSync(release)) { clearTimeout(timer); watcher.close(); process.stdout.write("BARRIER_RELEASED_" + name + "\\n"); } };
+const watcher = watch(dir, check);
+writeFileSync(dir + "/" + name + ".ready", "ready\\n");
+check();
+`,
+      );
+      calls = ["A", "B"].map((branch) => {
+        const leafCalls = [1, 2].map((index) => ({
+          name: `${branch}${index}`,
+          agent: layoutRole,
+          cwd: project,
+          task:
+            branch === "A" && index === 1
+              ? `${synthetic} Run exactly ${shellEscape(process.execPath)} ${shellEscape(barrier)} ${shellEscape(dir)} A1 using bash with timeout 430 seconds. This event-driven synthetic workload keeps the initial layout observable. After successful release call subagent with name A1a, agent ${layoutRole}, cwd ${JSON.stringify(project)}, task ${JSON.stringify(`${synthetic} Run exactly ${shellEscape(process.execPath)} ${shellEscape(barrier)} ${shellEscape(dir)} A1a using bash with timeout 430 seconds. After successful release ${layoutCompletion("RESULT_A1a")}`)}. End your turn normally and await automatic delivery without polling or calling completion tools while descendants remain outstanding. After its asynchronous result arrives, ${layoutCompletion("RESULT_A1 RECONCILED_A1 RESULT_A1a")} Report any failure honestly.`
+              : `${synthetic} Run exactly ${shellEscape(process.execPath)} ${shellEscape(barrier)} ${shellEscape(dir)} ${branch}${index} using bash with timeout 430 seconds. This is an event-driven synthetic workload, not agent status polling. After successful release ${layoutCompletion(`RESULT_${branch}${index}`)} On failure report the error honestly. Do not launch children.`,
+        }));
+        return {
+          name: branch,
+          agent: layoutRole,
+          cwd: project,
+          task: `${synthetic} Make these two public subagent calls in the supplied order, launching both before waiting: ${JSON.stringify(leafCalls)}. End your turn normally while they run. Do not poll, sleep, inspect sessions or call completion tools while descendants remain outstanding. After BOTH asynchronous child results arrive, reconcile them. ${layoutCompletion(`RECONCILED_${branch} RESULT_${branch}1 RESULT_${branch}2`)} If a child fails, report failure honestly.`,
+        };
+      });
+    } else if (bundledProof) {
       const leaf = `This is a bounded synthetic delegation acceptance task, not a repository change. Do not inspect user files, use todos, commit, or modify code. Run exactly sleep 35 using bash. Return exactly BUNDLED_LEAF_57.`;
       const bundledTask =
         bundledProof === "baseline"
@@ -184,9 +243,11 @@ test(
       ],
       { cwd: project, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const task = bundledProof
-      ? `Synthetic isolated proof. Make exactly this public subagent call: ${JSON.stringify(calls[0])}. End your turn while it works and await automatic delivery. Do not poll, interrupt, focus, or close panes. After its completed reconciled result arrives write that full result using bash to ${delivered}. Do not inspect user files.`
-      : `Synthetic isolated proof. Make these four public subagent calls with the exact supplied arguments, launching all before waiting: ${JSON.stringify(calls)}. Immediately after all launches write PARENT_CONTINUED_39 to ${parentMarker} using bash. Do independent parent work: calculate 17*19. End your turn and let upstream asynchronous results arrive. After all four independent results have arrived, write exactly RESULT_Standalone39 RESULT_Lineage39 RESULT_Fork39 RESULT_Nested39 RESULT_Leaf39 to ${delivered}. Do not inspect any user files, poll child sessions, interrupt, focus, or close panes.`;
+    const task = layoutProof
+      ? `${synthetic} Make these two public subagent calls in supplied order, launching both before waiting: ${JSON.stringify(calls)}. End your turn normally and await automatic delivery. Do not poll, sleep, inspect sessions, interrupt, focus or close panes. After BOTH completed reconciled results arrive, write exactly RECONCILED_A RESULT_A1 RESULT_A2 RECONCILED_B RESULT_B1 RESULT_B2 using bash to ${shellEscape(delivered)}. If either fails, report the failure instead of writing success.`
+      : bundledProof
+        ? `Synthetic isolated proof. Make exactly this public subagent call: ${JSON.stringify(calls[0])}. End your turn while it works and await automatic delivery. Do not poll, interrupt, focus, or close panes. After its completed reconciled result arrives write that full result using bash to ${delivered}. Do not inspect user files.`
+        : `Synthetic isolated proof. Make these four public subagent calls with the exact supplied arguments, launching all before waiting: ${JSON.stringify(calls)}. Immediately after all launches write PARENT_CONTINUED_39 to ${parentMarker} using bash. Do independent parent work: calculate 17*19. End your turn and let upstream asynchronous results arrive. After all four independent results have arrived, write exactly RESULT_Standalone39 RESULT_Lineage39 RESULT_Fork39 RESULT_Nested39 RESULT_Leaf39 to ${delivered}. Do not inspect any user files, poll child sessions, interrupt, focus, or close panes.`;
     const taskFile = join(dir, "task.md");
     writeFileSync(taskFile, task);
     const launch = join(dir, "launch.sh");
@@ -208,6 +269,39 @@ test(
     );
     console.log(`Private evidence directory: ${dir}`);
     herdr(["pane", "run", pane, `bash ${shellEscape(launch)}`]);
+    if (layoutProof) {
+      await proveBranchLayout({
+        dir,
+        project,
+        workspace,
+        pane,
+        parentSession,
+        delivered,
+        json,
+        herdr,
+      });
+      const after = json(["workspace", "list"]).workspaces;
+      assert.deepEqual(
+        after.filter((w: any) => w.focused).map((w: any) => w.workspace_id),
+        focusedBefore,
+        "launch and completion preserve the previously focused workspace",
+      );
+      assert.ok(
+        before.every((w: any) => after.some((a: any) => a.workspace_id === w.workspace_id)),
+      );
+      for (const unrelated of unrelatedPanes) {
+        assert.deepEqual(
+          json(["pane", "list", "--workspace", unrelated.workspace]).panes.map((p: any) => ({
+            pane: p.pane_id,
+            terminal: p.terminal_id,
+          })),
+          unrelated.panes,
+          "unrelated pane identities survive all phases",
+        );
+      }
+      assert.equal(createHash("sha256").update(readFileSync(authPath!)).digest("hex"), authHash);
+      return;
+    }
     const seenChildren = new Map<string, any>();
     const observations: any[] = [];
     const deadline = Date.now() + 480_000;
@@ -529,3 +623,364 @@ test(
     // Cleanup uses recorded identity and explicit /quit after acceptance, never server stop.
   },
 );
+
+/** Public native session receipts supply identities; public layout supplies geometry.
+ * Failed runs deliberately retain their exact ownership file and native histories.
+ */
+async function proveBranchLayout({
+  dir,
+  project,
+  workspace,
+  pane,
+  parentSession,
+  delivered,
+  json,
+  herdr,
+}: {
+  dir: string;
+  project: string;
+  workspace: string;
+  pane: string;
+  parentSession: string;
+  delivered: string;
+  json: (args: string[]) => any;
+  herdr: (args: string[]) => string;
+}): Promise<void> {
+  const deadline = Date.now() + 480_000;
+  const parse = (path: string): any[] => {
+    if (!existsSync(path)) return [];
+    // A writer may be between append and newline when fs.watch fires.
+    return readFileSync(path, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      });
+  };
+  const awaitReceipt = (label: string, ready: () => boolean) =>
+    new Promise<void>((resolve, reject) => {
+      const watcher = watch(dir, { recursive: true }, check);
+      const timer = setTimeout(
+        () => {
+          watcher.close();
+          reject(
+            new Error(
+              `Timed out awaiting ${label}; retained ownership: ${join(dir, "ownership.json")}`,
+            ),
+          );
+        },
+        Math.max(1, deadline - Date.now()),
+      );
+      function check() {
+        try {
+          if (!ready()) return;
+          clearTimeout(timer);
+          watcher.close();
+          resolve();
+        } catch (error) {
+          clearTimeout(timer);
+          watcher.close();
+          reject(error);
+        }
+      }
+      check();
+    });
+  const launchReceipts = (sessionFile: string) =>
+    parse(sessionFile)
+      .filter((e) => e.type === "message")
+      .map((e) => e.message)
+      .filter((m) => m.role === "toolResult" && m.toolName === "subagent" && !m.isError);
+  const resultReceipts = (sessionFile: string) =>
+    parse(sessionFile).filter((e) => e.customType === "subagent_result");
+  const nativeMapping = () => {
+    const mapping: Record<string, { pane: string; session: string; parent: string | null }> = {
+      Master: { pane, session: parentSession, parent: null },
+    };
+    const visit = (parent: string, sessionFile: string) => {
+      for (const receipt of launchReceipts(sessionFile)) {
+        const { name, sessionFile: childSession } = receipt.details;
+        const caps = JSON.parse(readFileSync(childSession + ".capabilities.json", "utf8"));
+        assert.equal(caps.role, layoutRole, `${name} uses the selected layout role`);
+        if (manualLayout) assert.notEqual(caps.autoExit, "1", `${name} remains non-autoexit`);
+        for (const tool of [
+          "subagent",
+          "subagent_interrupt",
+          "subagents_list",
+          "subagent_resume",
+        ]) {
+          assert.ok(
+            caps.activeTools.includes(tool),
+            `${name} exposes effective ${layoutRole} ${tool}`,
+          );
+        }
+        mapping[name] = { pane: caps.pane, session: childSession, parent };
+        visit(name, childSession);
+      }
+    };
+    visit("Master", parentSession);
+    return mapping;
+  };
+  const snapshots: any[] = [];
+  const capture = (phase: string) => {
+    const layout = json(["pane", "layout", "--pane", pane]).layout;
+    const panes = json(["pane", "list", "--workspace", workspace]).panes;
+    snapshots.push({ phase, at: Date.now(), layout, panes });
+    writeFileSync(join(dir, "layout-observations.json"), JSON.stringify(snapshots, null, 2));
+    return layout;
+  };
+  try {
+    await awaitReceipt("four event-driven leaf workloads", () =>
+      ["A1", "A2", "B1", "B2"].every((name) => existsSync(join(dir, `${name}.ready`))),
+    );
+    let mapping = nativeMapping();
+    const names = ["Master", "A", "A1", "A2", "B", "B1", "B2"];
+    assert.deepEqual(Object.keys(mapping).sort(), [...names].sort());
+    assert.equal(new Set(names.map((name) => mapping[name].session)).size, 7);
+    assert.equal(new Set(names.map((name) => mapping[name].pane)).size, 7);
+    assert.deepEqual(
+      launchReceipts(parentSession).map((r) => r.details.name),
+      ["A", "B"],
+    );
+    for (const branch of ["A", "B"]) {
+      assert.deepEqual(
+        launchReceipts(mapping[branch].session).map((r) => r.details.name),
+        [`${branch}1`, `${branch}2`],
+        "accepted launches supply sibling order independently of completion",
+      );
+    }
+    const full = capture("seven-live-panes");
+    const focusedPane = full.focused_pane_id;
+    assert.equal(focusedPane, pane, "nested launch never focuses a child");
+    const assertGeometry = (layout: any, present: string[]) => {
+      const rect = (name: string) => {
+        const item = layout.panes.find((p: any) => p.pane_id === mapping[name].pane);
+        assert.ok(item, `${name} remains in the task-owned tab`);
+        assert.ok(
+          item.rect.width >= 40 && item.rect.height >= 12,
+          `${name} meets 40x12 capacity policy`,
+        );
+        return item.rect;
+      };
+      assert.equal(layout.zoomed, false);
+      assert.equal(layout.focused_pane_id, focusedPane, "layout updates preserve pane focus");
+      const master = rect("Master");
+      const a = rect("A");
+      const b = rect("B");
+      assert.equal(master.y, layout.area.y);
+      assert.equal(master.height, layout.area.height, "master keeps the full tab height");
+      assert.equal(a.y, master.y, "A begins at the top of its column");
+      assert.equal(b.y, master.y, "B begins at the top of its column");
+      assert.ok(master.x + master.width <= a.x, "master stays left of branch A");
+      assert.ok(a.x + a.width <= b.x, "accepted root branch order is A then B");
+      for (const branch of ["A", "B"]) {
+        const parent = rect(branch);
+        let previous = parent;
+        for (const leaf of (branch === "A" ? ["A1", "A1a", "A2"] : ["B1", "B2"]).filter((name) =>
+          present.includes(name),
+        )) {
+          const child = rect(leaf);
+          assert.equal(
+            child.x,
+            parent.x,
+            `${leaf} belongs to its immediate parent's branch column`,
+          );
+          assert.equal(child.width, parent.width, `${leaf} shares the entire column width`);
+          assert.ok(
+            previous.y + previous.height <= child.y,
+            `${leaf} follows accepted sibling order downward`,
+          );
+          previous = child;
+        }
+      }
+      if (present.includes("C")) {
+        const c = rect("C");
+        assert.ok(b.x + b.width <= c.x, "later root branch C follows B as a distinct column");
+        assert.equal(c.y, master.y, "later direct child begins at the top");
+        assert.equal(c.height, master.height, "later direct child spans the tab height");
+      }
+    };
+    assertGeometry(full, names);
+    writeFileSync(join(dir, "native-mapping.json"), JSON.stringify(mapping, null, 2));
+    writeFileSync(
+      join(dir, "layout-ready.json"),
+      JSON.stringify(
+        {
+          session,
+          workspace,
+          pane,
+          mapping,
+          geometry: "seven-live-panes",
+          release: join(dir, "layout.release"),
+          nativeVisualAcceptance: false,
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(`Seven-pane geometry ready: ${join(dir, "layout-ready.json")}`);
+    if (process.env.PI_HERDR_LAYOUT_HOLD === "1") {
+      await awaitReceipt("explicit native-inspection release", () =>
+        existsSync(join(dir, "layout.release")),
+      );
+    }
+    writeFileSync(join(dir, "A1.release"), "deepen\n");
+    await awaitReceipt("deeper autonomous worker workload", () =>
+      existsSync(join(dir, "A1a.ready")),
+    );
+    mapping = nativeMapping();
+    assert.equal(mapping.A1a.parent, "A1", "deeper result belongs to its immediate parent");
+    const deepNames = [...names, "A1a"];
+    assertGeometry(capture("deeper-generation"), deepNames);
+    const cTask = `Run only this exact synthetic task. Do not inspect user files or modify code. Run exactly ${shellEscape(process.execPath)} ${shellEscape(join(dir, "layout-barrier.cjs"))} ${shellEscape(dir)} C using bash with timeout 430 seconds. After successful release ${layoutCompletion("RESULT_C")} Report any failure honestly.`;
+    const cCall = { name: "C", agent: layoutRole, task: cTask, cwd: project };
+    herdr([
+      "agent",
+      "prompt",
+      pane,
+      `Continue the same synthetic proof. Make exactly this additional public subagent call now: ${JSON.stringify(cCall)}. This is a later direct branch after grandchildren exist. Updated completion condition: end your turn normally and wait for ALL THREE direct child results A, B and C. Only after all three successful results arrive write exactly RECONCILED_A RESULT_A1 RESULT_A2 RECONCILED_B RESULT_B1 RESULT_B2 RESULT_C to ${shellEscape(delivered)} using bash. Do not poll, sleep, focus, interrupt, close panes or inspect sessions.`,
+    ]);
+    await awaitReceipt("later root branch C workload", () => existsSync(join(dir, "C.ready")));
+    mapping = nativeMapping();
+    assert.deepEqual(
+      launchReceipts(parentSession).map((r) => r.details.name),
+      ["A", "B", "C"],
+    );
+    const allNames = [...deepNames, "C"];
+    assert.equal(new Set(allNames.map((name) => mapping[name].pane)).size, 9);
+    assertGeometry(capture("later-root-column"), allNames);
+    writeFileSync(join(dir, "native-mapping.json"), JSON.stringify(mapping, null, 2));
+    // Finish the later sibling first in both branches, retaining each parent
+    // and earlier sibling so the remaining branch structure is inspectable.
+    for (const leaf of ["B2", "A2"]) {
+      const parent = mapping[leaf].parent!;
+      writeFileSync(join(dir, `${leaf}.release`), "release\n");
+      await awaitReceipt(`${leaf} immediate-parent delivery`, () =>
+        resultReceipts(mapping[parent].session).some((r) => r.details.name === leaf),
+      );
+      assert.equal(
+        resultReceipts(parentSession).length,
+        0,
+        "master cannot receive grandchildren directly",
+      );
+      const remaining = capture(`after-${leaf}-completion`);
+      assert.ok(
+        !remaining.panes.some((p: any) => p.pane_id === mapping[leaf].pane),
+        "completed leaf closes through managed ownership",
+      );
+      assertGeometry(
+        remaining,
+        leaf === "B2"
+          ? allNames.filter((n) => n !== "B2")
+          : allNames.filter((n) => !["B2", "A2"].includes(n)),
+      );
+    }
+    for (const leaf of ["A1a", "B1", "C"]) writeFileSync(join(dir, `${leaf}.release`), "release\n");
+    await awaitReceipt("all three reconciled root results", () => existsSync(delivered));
+    assert.equal(
+      readFileSync(delivered, "utf8").trim(),
+      "RECONCILED_A RESULT_A1 RESULT_A2 RECONCILED_B RESULT_B1 RESULT_B2 RESULT_C",
+    );
+    const rootResults = resultReceipts(parentSession);
+    assert.deepEqual(rootResults.map((r) => r.details.name).sort(), ["A", "B", "C"]);
+    for (const branch of ["A", "B"]) {
+      const results = resultReceipts(mapping[branch].session);
+      assert.deepEqual(
+        results.map((r) => r.details.name),
+        [`${branch}2`, `${branch}1`],
+        "completion order differs from accepted launch order",
+      );
+      assert.match(
+        rootResults.find((r) => r.details.name === branch).content,
+        new RegExp(`RECONCILED_${branch} RESULT_${branch}1 RESULT_${branch}2`),
+      );
+      assert.ok(
+        existsSync(mapping[branch].session),
+        "closed panes retain native conversation history",
+      );
+    }
+    assert.deepEqual(
+      resultReceipts(mapping.A1.session).map((r) => r.details.name),
+      ["A1a"],
+      "third-generation result is routed only to A1",
+    );
+    assert.match(rootResults.find((r) => r.details.name === "C").content, /RESULT_C/);
+    if (manualLayout) {
+      for (const name of allNames.filter((n) => n !== "Master")) {
+        const entries = parse(mapping[name].session);
+        const completions = entries
+          .filter((e) => e.type === "message")
+          .flatMap((e) => e.message.content ?? [])
+          .filter((c) => c.type === "toolCall" && c.name === "subagent_done");
+        assert.equal(completions.length, 1, `${name} explicitly completes exactly once`);
+        const doneIndex = entries.findIndex(
+          (e) =>
+            e.type === "message" &&
+            Array.isArray(e.message.content) &&
+            e.message.content.some((c: any) => c.type === "toolCall" && c.name === "subagent_done"),
+        );
+        for (const result of resultReceipts(mapping[name].session)) {
+          assert.ok(
+            entries.findIndex((e) => e.id === result.id) < doneIndex,
+            `${name} processes descendant results before explicit completion`,
+          );
+        }
+      }
+    }
+    const final = capture("all-descendants-completed");
+    assert.deepEqual(
+      final.panes.map((p: any) => p.pane_id),
+      [pane],
+    );
+    writeFileSync(
+      join(dir, "result.json"),
+      JSON.stringify(
+        {
+          bundledProof,
+          role: layoutRole,
+          completion: manualLayout
+            ? "public subagent_done after descendant reconciliation"
+            : "autonomous",
+          sevenPaneGeometry: true,
+          deeperGeneration: true,
+          laterRootBranch: true,
+          readable40x12: true,
+          acceptedLaunchOrder: true,
+          outOfOrderCompletion: true,
+          immediateParentRouting: true,
+          managedChildRemoval: true,
+          retainedHistory: true,
+          nativeVisualAcceptance: false,
+          unproven: [
+            "same-parent simultaneous public calls",
+            "resume and recovery",
+            "rendered native acceptance",
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+  } catch (error) {
+    writeFileSync(
+      join(dir, "layout-failure.json"),
+      JSON.stringify(
+        {
+          error: String(error),
+          retainedOwnership: join(dir, "ownership.json"),
+          nativeVisualAcceptance: false,
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(dir, "parent-screen.txt"),
+      herdr(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", "160"]),
+    );
+    throw error;
+  }
+}

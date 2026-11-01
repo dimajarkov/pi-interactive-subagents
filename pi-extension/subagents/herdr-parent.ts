@@ -35,6 +35,30 @@ const FEATURES = [
   "external_request_correlation_v1",
 ];
 const MAX_FRAME = 16384;
+function isTerminalCondition(value: any): value is TerminalCondition {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    ["pane_id", "tab_id", "terminal_id", "launch_id"].every(
+      (key) => typeof value[key] === "string" && value[key].length > 0,
+    )
+  );
+}
+
+function inheritedBranchRoot(): TerminalCondition | undefined {
+  const value = process.env.PI_HERDR_BRANCH_ROOT;
+  if (value === undefined) return undefined;
+  let root: unknown;
+  try {
+    root = JSON.parse(value);
+  } catch {
+    throw new Error("Herdr branch root identity is malformed; no pane allocated");
+  }
+  if (!isTerminalCondition(root))
+    throw new Error("Herdr branch root condition is incomplete; no pane allocated");
+  return root;
+}
 /** The transport proved that no request bytes were dispatched to the server. */
 export class HerdrRequestNotDispatched extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -59,18 +83,24 @@ export class ManagedLaunchOutcomeUnknown extends Error {
 export class HerdrParent {
   readonly socket: string;
   readonly parentPane: string;
-  constructor(socket: string, parentPane: string) {
+  private readonly branchRoot?: TerminalCondition;
+  private verifiedParent?: TerminalCondition;
+  constructor(socket: string, parentPane: string, branchRoot?: TerminalCondition) {
     if (!isAbsolute(socket) || !parentPane)
       throw new Error(
         "Herdr managed jobs require an absolute local socket and explicit parent pane",
       );
+    if (branchRoot && !isTerminalCondition(branchRoot))
+      throw new Error("Herdr branch root condition is incomplete; no pane allocated");
     this.socket = socket;
     this.parentPane = parentPane;
+    this.branchRoot = branchRoot ? { ...branchRoot } : undefined;
   }
   static discover(): HerdrParent {
     const session = process.env.HERDR_SESSION;
     if (!session || !process.env.HERDR_PANE_ID)
       throw new Error("Herdr managed jobs require HERDR_SESSION and HERDR_PANE_ID");
+    const branchRoot = inheritedBranchRoot();
     const output = JSON.parse(
       execFileSync("herdr", ["--session", session, "status", "server", "--json"], {
         encoding: "utf8",
@@ -81,7 +111,7 @@ export class HerdrParent {
     const status = output.server ?? output;
     if (status.running !== true || status.session !== session || typeof status.socket !== "string")
       throw new Error("Herdr server discovery did not match the explicit parent session");
-    return new HerdrParent(status.socket, process.env.HERDR_PANE_ID);
+    return new HerdrParent(status.socket, process.env.HERDR_PANE_ID, branchRoot);
   }
   async request(method: string, params: object, id = randomUUID()): Promise<any> {
     const frame = JSON.stringify({ id, method, params }) + "\n";
@@ -156,10 +186,10 @@ export class HerdrParent {
   async prepare(): Promise<TerminalCondition> {
     let caps: any;
     try {
-      caps = await this.request("terminal.job.capabilities", {});
+      caps = await this.request("terminal.job.branch_capabilities", {});
     } catch (cause) {
       throw new Error(
-        `Herdr managed API unsupported or unavailable; no pane allocated: ${cause instanceof Error ? cause.message : String(cause)}`,
+        `Herdr managed API unsupported or unavailable for branch placement; no pane allocated: ${cause instanceof Error ? cause.message : String(cause)}`,
         { cause },
       );
     }
@@ -172,7 +202,9 @@ export class HerdrParent {
       !Array.isArray(caps.required_sdk_features) ||
       !FEATURES.every((f) => caps.required_sdk_features.includes(f))
     )
-      throw new Error("Herdr server does not support managed job/control v1; no pane allocated");
+      throw new Error(
+        "Herdr server does not support managed branch placement and job/control v1; no pane allocated",
+      );
     const result = await this.request("terminal.condition", { pane_id: this.parentPane });
     const c = result.condition;
     if (
@@ -184,6 +216,7 @@ export class HerdrParent {
       )
     )
       throw new Error("Herdr did not return the original parent terminal condition");
+    this.verifiedParent = { ...c };
     return c;
   }
   async launch(
@@ -196,7 +229,19 @@ export class HerdrParent {
     },
     parent?: TerminalCondition,
   ): Promise<JobReceipt> {
-    const condition = parent ?? (await this.prepare());
+    const verified = this.verifiedParent ?? (await this.prepare());
+    if (
+      parent &&
+      !["pane_id", "tab_id", "terminal_id", "launch_id"].every(
+        (key) =>
+          parent[key as keyof TerminalCondition] === verified[key as keyof TerminalCondition],
+      )
+    )
+      throw new Error(
+        "Herdr launch parent differs from the verified calling terminal; no pane allocated",
+      );
+    const condition = parent ?? verified;
+    const root = this.branchRoot ?? condition;
     if (!isAbsolute(options.cwd) || !isAbsolute(options.scriptPath))
       throw new Error("Managed launch cwd and script must be absolute");
     mkdirSync(dirname(options.scriptPath), { recursive: true, mode: 0o700 });
@@ -212,12 +257,12 @@ export class HerdrParent {
       { mode: 0o700 },
     );
     try {
-      const result = await this.request("terminal.job.launch", {
+      const result = await this.request("terminal.job.launch_branch", {
         parent: condition,
+        root,
         argv: ["/bin/bash", options.scriptPath],
         cwd: options.cwd,
-        env: options.env ?? {},
-        direction: "right",
+        env: { ...options.env, PI_HERDR_BRANCH_ROOT: JSON.stringify(root) },
         label: options.name,
       });
       if (
@@ -238,7 +283,7 @@ export class HerdrParent {
       // after dispatch can hide a successful allocation and must retain ownership.
       if (
         cause instanceof HerdrRequestNotDispatched ||
-        (cause instanceof Error && cause.message.startsWith("Herdr terminal.job.launch:"))
+        (cause instanceof Error && cause.message.startsWith("Herdr terminal.job.launch_branch:"))
       )
         throw cause;
       const recoveryReceipt = options.scriptPath + ".lifecycle.json";

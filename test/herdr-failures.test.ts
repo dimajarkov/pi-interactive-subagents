@@ -70,7 +70,7 @@ else if (a[1] === "read") console.log("synthetic active child");
         let result: any;
         const error = (code: string, message: string) =>
           socket.end(JSON.stringify({ id: request.id, error: { code, message } }) + "\n");
-        if (request.method === "terminal.job.capabilities")
+        if (request.method === "terminal.job.branch_capabilities")
           result = {
             type: "managed_terminal_capabilities",
             job_ownership: true,
@@ -85,7 +85,7 @@ else if (a[1] === "read") console.log("synthetic active child");
           };
         else if (request.method === "terminal.condition")
           result = { type: "terminal_condition", condition: condition("parent") };
-        else if (request.method === "terminal.job.launch") {
+        else if (request.method === "terminal.job.launch_branch") {
           if ([s.fail].flat().includes("run")) {
             error("pane_launch_failed", "Herdr direct launch failed");
             continue;
@@ -286,7 +286,7 @@ test("completed child summary survives protected cleanup rejection and no close 
 test("direct launch rejection allocates no child and never guesses a cleanup target", async () =>
   fixture(async (h) => {
     h.configure({ fail: ["run", "close"] });
-    await assert.rejects(() => spawn(h), /Herdr terminal.job.launch.*pane_launch_failed/s);
+    await assert.rejects(() => spawn(h), /Herdr terminal.job.launch_branch.*pane_launch_failed/s);
     const closes = h.calls().filter((a: string[]) => a[1] === "close");
     assert.deepEqual(closes, []);
     assert.ok(!h.calls().some((a: string[]) => ["focus", "zoom", "move"].includes(a[1])));
@@ -305,7 +305,7 @@ test("resume direct launch rejection never closes the original session pane", as
         h.tools
           .get("subagent_resume")
           .execute("resume", { sessionPath, name: "ResumeFailure" }, undefined, undefined, h.ctx),
-      /Herdr terminal.job.launch/,
+      /Herdr terminal.job.launch_branch/,
     );
     assert.deepEqual(
       h.calls().filter((a: string[]) => a[1] === "close"),
@@ -626,7 +626,7 @@ test("a launch transport loss retains recovery evidence and never guesses child 
     assert.equal(evidence.type, "subagent_launch_outcome_unknown");
     assert.equal(evidence.cleanupOutcome, "retained");
     assert.equal(evidence.parent.pane_id, "parent");
-    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch_branch").length, 1);
     assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
   }));
 
@@ -641,6 +641,6 @@ test("an unwritable recovery receipt cannot turn an uncertain launch into a defi
       assert.match(error.cause.message, /closed without a matching response/);
       return true;
     });
-    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch_branch").length, 1);
     assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
   }));

@@ -50,6 +50,7 @@ zellij --session pi   # then run: pi
 
 Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specific backend.
 The Herdr fork requires a verified managed Herdr caller and its supported runtime; see [failure safety](docs/herdr-failure-safety.md).
+See [branch placement](docs/herdr-branch-layout.md) for required managed server methods, ordering and readable capacity.
 The upstream installer above selects HazAT's repository; immutable deployment of this fork is a separate dotfiles integration step.
 See [the upstream compatibility record](docs/herdr-upstream-compatibility.md) for actual backend coverage and limitations.
 
