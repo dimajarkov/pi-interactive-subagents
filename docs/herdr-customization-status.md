@@ -99,3 +99,10 @@ Host capability snapshots verify all four active lifecycle tools in both workers
 The retained nested layout and caller mapping provide programmatic placement evidence for the separate layout ticket; they do not prove visual acceptance.
 The model-backed baseline and nested modes passed on 2026-11-01 against the respective prechange and candidate policies, preserving focus, unrelated workspaces, credentials and native history.
 This is native execution and host capability evidence, alongside component-level widget evidence; it is not a new rendered widget or physical keyboard acceptance claim.
+
+## Current child widget shortcut
+
+The candidate uses `Alt+J` to expand and collapse the child tools widget.
+`Ctrl+J` remains Pi's native newline binding.
+A public registration regression checks the widget toggle against native TUI defaults, and the existing component tests exercise expansion through the new registered shortcut.
+The historical human observation above used the earlier `Ctrl+J` revision; it does not establish physical-key or rendered acceptance for this candidate.

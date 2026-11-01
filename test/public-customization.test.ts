@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initTheme } from "@mariozechner/pi-coding-agent";
+import { TUI_KEYBINDINGS } from "@mariozechner/pi-tui";
 import extension from "../pi-extension/subagents/index.ts";
 import childExtension from "../pi-extension/subagents/subagent-done.ts";
 
@@ -150,7 +151,7 @@ test("each individual lifecycle denial removes only that tool from registration 
         },
       };
       for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
-      await h.shortcuts.get("ctrl+j").handler(ctx);
+      await h.shortcuts.get("alt+j").handler(ctx);
       const text = widget(null, theme).render(180).join("\n");
       assert.match(text, new RegExp(`denied: ${denied}(?:\\s|$)`));
       for (const tool of lifecycle.filter((t) => t !== denied)) assert.ok(text.includes(tool));
@@ -203,7 +204,7 @@ test("child widget toggle exposes effective tools and deny list; native activity
     };
     emit("session_start");
     assert.match(widget(null, theme).render(100).join("\n"), /SyntheticChild.*3 tools.*1 denied/);
-    await h.shortcuts.get("ctrl+j").handler(ctx);
+    await h.shortcuts.get("alt+j").handler(ctx);
     const expanded = widget(null, theme).render(100).join("\n");
     assert.match(expanded, /caller_ping, read, subagent_done/);
     assert.match(expanded, /denied: subagent/);
@@ -605,3 +606,14 @@ test("missing native policy enforcement shuts down and blocks input even when ev
       "a swallowed handler error cannot pass the initial task to a model",
     );
   }));
+
+test("child widget shortcut preserves native terminal editor bindings", () => {
+  const h = host();
+  childExtension(h.api);
+  const native = new Set<string>(
+    Object.values(TUI_KEYBINDINGS).flatMap((binding) => binding.defaultKeys),
+  );
+  assert.ok(h.shortcuts.size > 0, "widget retains a discoverable toggle");
+  for (const key of h.shortcuts.keys())
+    assert.ok(!native.has(key), `child widget overrides native ${key}`);
+});
