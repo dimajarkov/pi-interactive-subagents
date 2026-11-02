@@ -6,7 +6,7 @@ import {
 } from "./delegation-lifecycle.ts";
 /**
  * Extension loaded into sub-agents.
- * - Shows agent identity + available tools as a styled widget above the editor (toggle with Alt+J)
+ * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+Alt+J)
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -111,7 +111,7 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           // Expanded: full tool list + denied
           const countInfo = theme.fg("dim", ` — ${toolNames.length} available`);
-          const hint = theme.fg("muted", "  (Alt+J to collapse)");
+          const hint = theme.fg("muted", "  (Ctrl+Alt+J to collapse)");
 
           const toolList = toolNames
             .map((name: string) => theme.fg("dim", name))
@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
             denied.length > 0
               ? theme.fg("dim", " · ") + theme.fg("error", `${denied.length} denied`)
               : "";
-          const hint = theme.fg("muted", "  (Alt+J to expand)");
+          const hint = theme.fg("muted", "  (Ctrl+Alt+J to expand)");
 
           const content = new Text(`${agentTag}${countInfo}${deniedInfo}${hint}`, 0, 0);
           box.addChild(content);
@@ -312,13 +312,18 @@ export default function (pi: ExtensionAPI) {
     recorder.sessionShutdown((event as any).reason);
   });
 
-  // Toggle expand/collapse with Alt+J
-  pi.registerShortcut("alt+j", {
+  // Toggle expand/collapse with Ctrl+Alt+J
+  const toggleTools = (ctx: { ui: { setWidget: Function } }) => {
+    expanded = !expanded;
+    renderWidget(ctx, null);
+  };
+  pi.registerShortcut("ctrl+alt+j", {
     description: "Toggle subagent tools widget",
-    handler: (ctx) => {
-      expanded = !expanded;
-      renderWidget(ctx, null);
-    },
+    handler: toggleTools,
+  });
+  pi.registerCommand("subagent-tools", {
+    description: "Toggle subagent tools widget",
+    handler: async (_args, ctx) => toggleTools(ctx),
   });
 
   pi.registerTool({

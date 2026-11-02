@@ -152,7 +152,7 @@ test("each individual lifecycle denial removes only that tool from registration 
         },
       };
       for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
-      await h.shortcuts.get("alt+j").handler(ctx);
+      await h.shortcuts.get("ctrl+alt+j").handler(ctx);
       const text = widget(null, theme).render(180).join("\n");
       assert.match(text, new RegExp(`denied: ${denied}(?:\\s|$)`));
       for (const tool of lifecycle.filter((t) => t !== denied)) assert.ok(text.includes(tool));
@@ -205,7 +205,7 @@ test("child widget toggle exposes effective tools and deny list; native activity
     };
     emit("session_start");
     assert.match(widget(null, theme).render(100).join("\n"), /SyntheticChild.*3 tools.*1 denied/);
-    await h.shortcuts.get("alt+j").handler(ctx);
+    await h.shortcuts.get("ctrl+alt+j").handler(ctx);
     const expanded = widget(null, theme).render(100).join("\n");
     assert.match(expanded, /caller_ping, read, subagent_done/);
     assert.match(expanded, /denied: subagent/);
@@ -635,7 +635,7 @@ test("child widget excludes configured but inactive tools under a narrow allowli
       },
     };
     for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
-    await h.shortcuts.get("alt+j").handler(ctx);
+    await h.shortcuts.get("ctrl+alt+j").handler(ctx);
     const text = widget(null, theme).render(180).join("\n");
     assert.match(text, /3 available/);
     assert.doesNotMatch(text, /bash/);
@@ -684,4 +684,31 @@ test("reload retains takeover and recognizes the first new input; explicit resum
     resumed("agent_start");
     resumed("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
     assert.equal(shutdowns, 1, "a deliberate resume uses its new autonomous execution policy");
+  }));
+
+test("child widget does not intercept Herdr pane navigation and has a command toggle", async () =>
+  isolated(async () => {
+    const h = host();
+    childExtension(h.api);
+    // Declared Herdr navigation chords are owned by the enclosing multiplexer.
+    for (const key of ["alt+j", "alt+k", "alt+l", "alt+;", "tab"])
+      assert.ok(!h.shortcuts.has(key), `widget conflicts with Herdr ${key}`);
+    let widget: any;
+    const ctx = {
+      ui: {
+        setWidget: (_: string, component: any) => {
+          widget = component;
+        },
+      },
+    };
+    for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+    const command = h.commands.get("subagent-tools");
+    assert.ok(
+      command,
+      "widget has a discoverable command independent of terminal modifier handling",
+    );
+    await command.handler("", ctx);
+    assert.match(widget(null, theme).render(160).join("\n"), /available/);
+    await command.handler("", ctx);
+    assert.match(widget(null, theme).render(160).join("\n"), /tools/);
   }));
