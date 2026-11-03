@@ -50,6 +50,7 @@ zellij --session pi   # then run: pi
 
 Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specific backend.
 The Herdr fork requires a verified managed Herdr caller and its supported runtime; see [failure safety](docs/herdr-failure-safety.md).
+See [branch placement](docs/herdr-branch-layout.md) for required managed server methods, ordering and readable capacity.
 The upstream installer above selects HazAT's repository; immutable deployment of this fork is a separate dotfiles integration step.
 See [the upstream compatibility record](docs/herdr-upstream-compatibility.md) for actual backend coverage and limitations.
 
@@ -212,7 +213,11 @@ The `caller_ping` tool lets a subagent request help from its parent agent. When 
 - `sessionPath` (required): Path to the child session `.jsonl` file
 - `name` (optional): Display name for the resumed pane (defaults to `Resume`)
 - `message` (optional): Follow-up prompt to send after resuming
-- `autoExit` (optional): Whether the resumed session should auto-exit after its next response. Defaults to `true` for autonomous follow-up work; set `false` when resuming for an interactive handoff.
+- `autoExit` (optional): Whether the resumed session should auto-exit after its next response. Defaults to the original saved role policy; set `true` for autonomous follow-up work or `false` for an interactive handoff.
+
+Managed resume restores the original effective policy and requires the original immediate parent's native lineage.
+Concurrent, foreign, legacy or unresolved executions are refused before pane allocation.
+See [native session policy and recovery](docs/herdr-recovery.md) for private receipts, same-session reload and the manual recovery boundary.
 
 **Interaction flow:**
 1. Child calls `caller_ping({ message: "Not sure which schema to use" })`
@@ -305,7 +310,7 @@ You are a specialized agent that does X...
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |
 | `spawning`    | boolean | Set `false` to deny all subagent-spawning tools                                                                                                                                                                                                                             |
 | `deny-tools`  | string  | Comma-separated extension tool names to deny                                                                                                                                                                                                                                |
-| `auto-exit`   | boolean | Auto-shutdown when the agent finishes its turn — no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents (scout, worker); not for interactive ones (planner). Also determines the default value of `interactive` (see below). |
+| `auto-exit`   | boolean | Auto-shutdown after a completed turn once delegated work and queued outcomes are settled; no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents (scout, worker); not for interactive ones (planner). Also determines the default value of `interactive` (see below). |
 | `interactive` | boolean | derived        | Override whether stall/recovery transitions wake the parent session. Defaults to the inverse of `auto-exit`: autonomous agents (`auto-exit: true`) are non-interactive and get stall pings; agents without `auto-exit` are interactive and stay quiet. Explicit values take precedence. |
 | `cwd`         | string  | Default working directory (absolute or relative to project root)                                                                                                                                                                                                            |
 | `disable-model-invocation` | boolean | Hide this agent from discovery surfaces like `subagents_list`. The agent still remains directly invokable by explicit name via `subagent({ agent: "name", ... })`. |
@@ -335,13 +340,26 @@ session-mode: lineage-only
 
 ### `auto-exit`
 
-When set to `true`, the agent session shuts down automatically as soon as the agent finishes its turn — no explicit `subagent_done` call is needed.
+When set to `true`, the agent session shuts down after a completed turn once its delegated work is settled.
+No explicit `subagent_done` call is needed.
 
 **Behavior:**
 
-- The session closes after the agent's final message (on the `agent_end` event)
+- A normal turn end keeps the session alive while a launch is in flight, a child is running, or a delivered child outcome has not reached a successful model response.
+- Each child result wakes its immediate caller through the existing asynchronous notification flow.
+  End your turn normally while waiting; do not poll child panes or session files.
+- `subagent_done` and exit-producing `caller_ping` requests return an actionable error while delegated work remains outstanding.
+- Interruption preserves the native conversation and its children; an aborted response does not acknowledge queued outcomes.
 - If the user sends **any input** before the agent finishes, auto-exit is permanently disabled for that session — the user takes over interactively
 - The modeHint injected into the agent's task is adjusted accordingly: autonomous agents see "Complete your task autonomously." rather than instructions to call `subagent_done`
+
+A definite launch rejection or connection failure before dispatch releases its pending launch reservation.
+Managed launch transport failures after dispatch can leave allocation uncertain even when the tool reports an error.
+The launch attempts to write a `.lifecycle.json` recovery receipt beside its script and refuses autonomous or explicit completion while that ownership remains unresolved.
+If writing the receipt fails, the tool still reports uncertain ownership with the original transport cause and the recording error.
+Inspect the original launch and receipt before recovery; do not blindly retry, close an unverified pane, or assume a result will arrive automatically.
+This completion guard belongs to the current native session and extension instance.
+It does not automatically adopt retained jobs after shutdown, reload, or session replacement.
 
 **When to use:**
 
@@ -409,15 +427,18 @@ deny-tools: subagent
 ---
 ```
 
-### Recommended Configuration
+### Bundled delegation policy
 
-| Agent      | `spawning`  | Rationale                                    |
-| ---------- | ----------- | -------------------------------------------- |
-| planner    | _(default)_ | Legitimately spawns scouts for investigation |
-| worker     | `false`     | Should implement tasks, not delegate         |
-| researcher | `false`     | Should research, not spawn                   |
-| reviewer   | `false`     | Should review, not spawn                     |
-| scout      | `false`     | Should gather context, not spawn             |
+All bundled roles (planner, worker, scout, reviewer and visual-tester) can use `subagent`, `subagent_interrupt`, `subagents_list` and `subagent_resume`.
+Same-role delegation, including worker to worker, is supported.
+An autonomous delegator may end its turn while its children work; their asynchronous results return to that immediate parent, which reconciles them before reporting upward.
+No polling or explicit completion call is needed.
+
+Project definitions still shadow global definitions, which shadow bundled defaults.
+An explicit custom `spawning: false` denies all four lifecycle tools, and `deny-tools` can deny individual operations.
+Explicit `tools` allowlists still constrain the selected role.
+The child tools widget displays its registered tools and intentional denials.
+Existing role-specific tools, exact models, reasoning levels, Claude restrictions and visual-host requirements remain unchanged.
 
 ---
 
@@ -456,11 +477,11 @@ spawning: false
 
 ## Tools Widget
 
-Every sub-agent session displays a compact tools widget showing available and denied tools. Toggle with `Ctrl+J`:
+Every sub-agent session displays a compact tools widget showing available and denied tools. Toggle with `Ctrl+Alt+J` or `/subagent-tools`:
 
 ```
-[scout] — 12 tools · 4 denied  (Ctrl+J)              ← collapsed
-[scout] — 12 available  (Ctrl+J to collapse)          ← expanded
+[scout] — 12 tools · 4 denied  (Ctrl+Alt+J)              ← collapsed
+[scout] — 12 available  (Ctrl+Alt+J to collapse)          ← expanded
   read, bash, edit, write, todo, ...
   denied: subagent, subagents_list, ...
 ```

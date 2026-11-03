@@ -1,6 +1,12 @@
+import { ownExitFile } from "./recovery.ts";
+import {
+  outstandingDelegation,
+  delegationExitRefusal,
+  requireDelegationLifecycleBus,
+} from "./delegation-lifecycle.ts";
 /**
  * Extension loaded into sub-agents.
- * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+J)
+ * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+Alt+J)
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -77,9 +83,11 @@ export function parseDeniedTools(rawValue: string | undefined): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+  requireDelegationLifecycleBus(pi);
   let toolNames: string[] = [];
   let denied: string[] = [];
   let expanded = false;
+  let policyFailed = false;
 
   // Read subagent identity from env vars (set by parent orchestrator)
   const subagentName = process.env.PI_SUBAGENT_NAME ?? "";
@@ -103,7 +111,7 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           // Expanded: full tool list + denied
           const countInfo = theme.fg("dim", ` — ${toolNames.length} available`);
-          const hint = theme.fg("muted", "  (Ctrl+J to collapse)");
+          const hint = theme.fg("muted", "  (Ctrl+Alt+J to collapse)");
 
           const toolList = toolNames
             .map((name: string) => theme.fg("dim", name))
@@ -130,7 +138,7 @@ export default function (pi: ExtensionAPI) {
             denied.length > 0
               ? theme.fg("dim", " · ") + theme.fg("error", `${denied.length} denied`)
               : "";
-          const hint = theme.fg("muted", "  (Ctrl+J to expand)");
+          const hint = theme.fg("muted", "  (Ctrl+Alt+J to expand)");
 
           const content = new Text(`${agentTag}${countInfo}${deniedInfo}${hint}`, 0, 0);
           box.addChild(content);
@@ -144,23 +152,69 @@ export default function (pi: ExtensionAPI) {
 
   let userTookOver = false;
   let agentStarted = false;
+  const executionId = process.env.PI_SUBAGENT_ID;
+  const controlEntryType = "subagent_execution_control";
+  function persistControl() {
+    if (executionId) pi.appendEntry(controlEntryType, { executionId, agentStarted, userTookOver });
+  }
 
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
+    // Native custom entries survive extension replacement without inheriting
+    // takeover from an earlier, explicitly resumed execution of this session.
+    const control = ctx.sessionManager
+      ?.getEntries?.()
+      .findLast(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === controlEntryType &&
+          (entry.data as any)?.executionId === executionId,
+      );
+    if (executionId && control?.type === "custom") {
+      agentStarted = (control.data as any)?.agentStarted === true;
+      userTookOver = (control.data as any)?.userTookOver === true;
+    }
     recorder.sessionStart();
-    const tools = pi.getAllTools();
-    toolNames = tools.map((t) => t.name).sort();
     denied = parseDeniedTools(deniedToolsValue);
+    if (denied.length) {
+      try {
+        if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function")
+          throw new Error("Native active-tool policy API required to enforce child denials");
+        pi.setActiveTools(pi.getActiveTools().filter((name) => !denied.includes(name)));
+      } catch (error) {
+        policyFailed = true;
+        try {
+          ctx.ui?.notify?.(
+            `Child policy could not be enforced; execution stopped: ${String(error)}`,
+            "error",
+          );
+        } finally {
+          ctx.shutdown();
+        }
+        return;
+      }
+    }
+    const activeTools = new Set(pi.getActiveTools());
+    toolNames = pi
+      .getAllTools()
+      .map((t) => t.name)
+      .filter((name) => activeTools.has(name))
+      .filter((name) => !denied.includes(name))
+      .sort();
 
     renderWidget(ctx, null);
   });
 
   pi.on("input", () => {
+    if (policyFailed) return { action: "handled" };
     recorder.input();
     // Ignore the initial task message that starts an autonomous subagent.
     // Only inputs after the first agent run has started count as user takeover.
     if (!shouldMarkUserTookOver(agentStarted)) return;
-    userTookOver = true;
+    if (!userTookOver) {
+      userTookOver = true;
+      persistControl();
+    }
   });
 
   pi.on("before_agent_start", () => {
@@ -168,13 +222,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", () => {
-    agentStarted = true;
+    if (!agentStarted) {
+      agentStarted = true;
+      persistControl();
+    }
     recorder.agentStart();
   });
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
-    const shouldExit = autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages);
+    const shouldExit =
+      autoExit &&
+      !outstandingDelegation(pi, ctx) &&
+      shouldAutoExitOnAgentEnd(userTookOver, messages);
 
     if (shouldExit) {
       // Surface stopReason: "error" turns (auto-retry exhausted, provider
@@ -187,7 +247,7 @@ export default function (pi: ExtensionAPI) {
       if (errorInfo && sessionFile) {
         try {
           writeFileSync(
-            `${sessionFile}.exit`,
+            ownExitFile(sessionFile),
             JSON.stringify({
               type: "error",
               errorMessage: errorInfo.errorMessage,
@@ -252,13 +312,18 @@ export default function (pi: ExtensionAPI) {
     recorder.sessionShutdown((event as any).reason);
   });
 
-  // Toggle expand/collapse with Ctrl+J
-  pi.registerShortcut("ctrl+j", {
+  // Toggle expand/collapse with Ctrl+Alt+J
+  const toggleTools = (ctx: { ui: { setWidget: Function } }) => {
+    expanded = !expanded;
+    renderWidget(ctx, null);
+  };
+  pi.registerShortcut("ctrl+alt+j", {
     description: "Toggle subagent tools widget",
-    handler: (ctx) => {
-      expanded = !expanded;
-      renderWidget(ctx, null);
-    },
+    handler: toggleTools,
+  });
+  pi.registerCommand("subagent-tools", {
+    description: "Toggle subagent tools widget",
+    handler: async (_args, ctx) => toggleTools(ctx),
   });
 
   pi.registerTool({
@@ -280,13 +345,20 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
+      const refusal = delegationExitRefusal(pi, ctx);
+      if (refusal)
+        return {
+          isError: true,
+          content: [{ type: "text", text: refusal }],
+          details: { outstandingDelegation: true },
+        };
       recorder.callerPing();
       const exitData = {
         type: "ping" as const,
         name: process.env.PI_SUBAGENT_NAME ?? "subagent",
         message: params.message,
       };
-      writeFileSync(`${sessionFile}.exit`, JSON.stringify(exitData));
+      writeFileSync(ownExitFile(sessionFile), JSON.stringify(exitData));
 
       ctx.shutdown();
       return {
@@ -308,9 +380,16 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
+      const refusal = delegationExitRefusal(pi, ctx);
+      if (refusal)
+        return {
+          isError: true,
+          content: [{ type: "text", text: refusal }],
+          details: { outstandingDelegation: true },
+        };
       recorder.subagentDone();
       if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "done" }));
+        writeFileSync(ownExitFile(sessionFile), JSON.stringify({ type: "done" }));
       }
       ctx.shutdown();
       return {

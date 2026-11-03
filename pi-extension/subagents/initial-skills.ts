@@ -1,3 +1,4 @@
+import { ownExitFile } from "./recovery.ts";
 /** Apply explicitly configured skills to the initial task, before auto-exit can run. */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { stripFrontmatter } from "@mariozechner/pi-coding-agent";
@@ -40,7 +41,7 @@ export default function initialSkills(pi: ExtensionAPI) {
         if (sessionFile) {
           try {
             writeFileSync(
-              `${sessionFile}.exit`,
+              ownExitFile(sessionFile),
               JSON.stringify({ type: "error", errorMessage, stopReason: "error" }),
             );
           } catch (deliveryError) {

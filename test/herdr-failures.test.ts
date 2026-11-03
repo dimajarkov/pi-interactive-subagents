@@ -1,7 +1,16 @@
+import { EventEmitter } from "node:events";
 import net from "node:net";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  appendFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -69,7 +78,7 @@ else if (a[1] === "read") console.log("synthetic active child");
         let result: any;
         const error = (code: string, message: string) =>
           socket.end(JSON.stringify({ id: request.id, error: { code, message } }) + "\n");
-        if (request.method === "terminal.job.capabilities")
+        if (request.method === "terminal.job.branch_capabilities")
           result = {
             type: "managed_terminal_capabilities",
             job_ownership: true,
@@ -84,7 +93,7 @@ else if (a[1] === "read") console.log("synthetic active child");
           };
         else if (request.method === "terminal.condition")
           result = { type: "terminal_condition", condition: condition("parent") };
-        else if (request.method === "terminal.job.launch") {
+        else if (request.method === "terminal.job.launch_branch") {
           if ([s.fail].flat().includes("run")) {
             error("pane_launch_failed", "Herdr direct launch failed");
             continue;
@@ -94,6 +103,11 @@ else if (a[1] === "read") console.log("synthetic active child");
           assert.match(readFileSync(p.argv[1], "utf8"), /HERDR_PANE_ID/);
           s.sequence++;
           writeFileSync(state, JSON.stringify(s));
+          if (s.uncertainLaunch) {
+            if (s.recoveryWriteFails) mkdirSync(p.argv[1] + ".lifecycle.json");
+            socket.end();
+            continue;
+          }
           const child = "child-" + s.sequence;
           result = {
             type: "managed_terminal",
@@ -159,6 +173,7 @@ else if (a[1] === "read") console.log("synthetic active child");
     JSON.stringify({ type: "session", id: "parent-session", version: 3 }) + "\n",
   );
   const api: any = {
+    events: new EventEmitter(),
     on(name: string, fn: any) {
       events.set(name, [...(events.get(name) ?? []), fn]);
     },
@@ -257,19 +272,35 @@ test("a missing job status retains cleanup uncertainty without retrying another 
     );
   }));
 
+async function completedSession(h: any) {
+  h.configure({ fail: null });
+  const started = await spawn(h);
+  appendFileSync(
+    started.details.sessionFile,
+    JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "ORIGINAL_COMPLETION" }] },
+    }) + "\n",
+  );
+  writeFileSync(started.details.exitFile, JSON.stringify({ type: "done" }));
+  await result(h);
+  h.messages.splice(0);
+  return started;
+}
+
 test("completed child summary survives protected cleanup rejection and no close retry is issued", async () =>
   fixture(async (h) => {
     h.configure({ fail: "close" });
     const started = await spawn(h);
     const session = started.details.sessionFile;
-    writeFileSync(
+    appendFileSync(
       session,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "CHILD_RESULT_42" }] },
       }) + "\n",
     );
-    writeFileSync(session + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(started.details.exitFile, JSON.stringify({ type: "done" }));
     const m = await result(h);
     assert.match(m.content, /CHILD_RESULT_42/);
     assert.match(m.content, /cleanup.*protected_close/i);
@@ -279,7 +310,7 @@ test("completed child summary survives protected cleanup rejection and no close 
 test("direct launch rejection allocates no child and never guesses a cleanup target", async () =>
   fixture(async (h) => {
     h.configure({ fail: ["run", "close"] });
-    await assert.rejects(() => spawn(h), /Herdr terminal.job.launch.*pane_launch_failed/s);
+    await assert.rejects(() => spawn(h), /Herdr terminal.job.launch_branch.*pane_launch_failed/s);
     const closes = h.calls().filter((a: string[]) => a[1] === "close");
     assert.deepEqual(closes, []);
     assert.ok(!h.calls().some((a: string[]) => ["focus", "zoom", "move"].includes(a[1])));
@@ -287,22 +318,23 @@ test("direct launch rejection allocates no child and never guesses a cleanup tar
 
 test("resume direct launch rejection never closes the original session pane", async () =>
   fixture(async (h) => {
+    const previous = await completedSession(h);
+    const sessionPath = previous.details.sessionFile;
+    const closesBefore = h.calls().filter((a: string[]) => a[1] === "close").length;
     h.configure({ fail: "run" });
-    const sessionPath = join(h.dir, "resume.jsonl");
-    writeFileSync(
-      sessionPath,
-      JSON.stringify({ type: "session", id: "resume", version: 3 }) + "\n",
-    );
     await assert.rejects(
       () =>
         h.tools
           .get("subagent_resume")
           .execute("resume", { sessionPath, name: "ResumeFailure" }, undefined, undefined, h.ctx),
-      /Herdr terminal.job.launch/,
+      /Herdr terminal.job.launch_branch/,
     );
     assert.deepEqual(
       h.calls().filter((a: string[]) => a[1] === "close"),
-      [],
+      h
+        .calls()
+        .filter((a: string[]) => a[1] === "close")
+        .slice(0, closesBefore),
     );
   }));
 
@@ -326,14 +358,14 @@ test("a sidecar arriving during terminal read failure wins over the read error",
   fixture(async (h) => {
     h.configure({ fail: null });
     const started = await spawn(h);
-    writeFileSync(
+    appendFileSync(
       started.details.sessionFile,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "LATE_RESULT_42" }] },
       }) + "\n",
     );
-    h.configure({ fail: "read", lateSidecar: started.details.sessionFile + ".exit" });
+    h.configure({ fail: "read", lateSidecar: started.details.exitFile });
     const m = await result(h);
     assert.match(m.content, /LATE_RESULT_42/);
     assert.equal(m.details.exitCode, 1);
@@ -346,14 +378,14 @@ test("parallel child failure and completion keep independent ownership and resul
     const first = await spawn(h);
     const second = await spawn(h);
     assert.notEqual(first.details.sessionFile, second.details.sessionFile);
-    writeFileSync(
+    appendFileSync(
       second.details.sessionFile,
       JSON.stringify({
         type: "message",
         message: { role: "assistant", content: [{ type: "text", text: "SECOND_CHILD_RESULT_42" }] },
       }) + "\n",
     );
-    writeFileSync(second.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(second.details.exitFile, JSON.stringify({ type: "done" }));
     const end = Date.now() + 2500;
     while (
       h.messages.filter((m: any) => m.customType === "subagent_result").length < 2 &&
@@ -383,13 +415,11 @@ test("existing zoom refuses background launch before creating or changing layout
 
 test("resumed completion preserves new summary and cleanup rejection in its parent notification", async () =>
   fixture(async (h) => {
+    const previous = await completedSession(h);
+    const sessionPath = previous.details.sessionFile;
+    const closesBefore = h.calls().filter((a: string[]) => a[1] === "close").length;
     h.configure({ fail: "close" });
-    const sessionPath = join(h.dir, "resume-complete.jsonl");
-    writeFileSync(
-      sessionPath,
-      JSON.stringify({ type: "session", id: "resume", version: 3 }) + "\n",
-    );
-    await h.tools
+    const resumed = await h.tools
       .get("subagent_resume")
       .execute("resume", { sessionPath, name: "ResumeCleanup" }, undefined, undefined, h.ctx);
     writeFileSync(
@@ -401,11 +431,11 @@ test("resumed completion preserves new summary and cleanup rejection in its pare
         }) +
         "\n",
     );
-    writeFileSync(sessionPath + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(resumed.details.exitFile, JSON.stringify({ type: "done" }));
     const m = await result(h);
     assert.match(m.content, /RESUMED_RESULT_42/);
     assert.match(m.content, /cleanup.*protected_close/i);
-    assert.equal(h.calls().filter((a: string[]) => a[1] === "close").length, 1);
+    assert.equal(h.calls().filter((a: string[]) => a[1] === "close").length - closesBefore, 1);
   }));
 
 test("unavailable exact specialist models fail before creating a child and never substitute parent defaults", async () =>
@@ -426,6 +456,71 @@ test("unavailable exact specialist models fail before creating a child and never
       /Requested model openai-codex\/gpt-6-astra is unavailable.*no substitution/i,
     );
     assert.equal(JSON.parse(readFileSync(h.state, "utf8")).sequence, 0);
+  }));
+
+test("a bundled worker can launch another worker through the public delegation tool", async () =>
+  fixture(async (h) => {
+    h.configure({ fail: null });
+    process.env.PI_SUBAGENT_AGENT = "worker";
+    const r = await h.tools
+      .get("subagent")
+      .execute(
+        "same-role",
+        { name: "Nested worker", agent: "worker", task: "Synthetic same-role task" },
+        undefined,
+        undefined,
+        h.ctx,
+      );
+    assert.equal(r.details.status, "started");
+    assert.match(readFileSync(r.details.launchScriptFile, "utf8"), /PI_SUBAGENT_AGENT='worker'/);
+    writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+  }));
+
+test("project and global role overrides retain spawning and individual-denial policy at launch", async () =>
+  fixture(async (h) => {
+    h.configure({ fail: null });
+    const previousCwd = process.cwd();
+    process.chdir(h.dir);
+    const global = join(h.dir, "config", "agents");
+    const project = join(h.dir, ".pi", "agents");
+    mkdirSync(global, { recursive: true });
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(global, "worker.md"),
+      "---\nname: worker\ntools: read,subagent,subagent_interrupt,subagents_list,subagent_resume\nspawning: false\ndeny-tools: claude\n---\nSynthetic global role.",
+    );
+    writeFileSync(
+      join(project, "worker.md"),
+      "---\nname: worker\ntools: read,subagent,subagent_interrupt,subagents_list,subagent_resume\ndeny-tools: subagent_resume\n---\nSynthetic project role.",
+    );
+    try {
+      const launch = async (name: string) => {
+        const r = await h.tools
+          .get("subagent")
+          .execute(
+            name,
+            { name, agent: "worker", task: "Synthetic policy task" },
+            undefined,
+            undefined,
+            h.ctx,
+          );
+        const script = readFileSync(r.details.launchScriptFile, "utf8");
+        writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+        return script;
+      };
+      const local = await launch("Project restriction");
+      assert.match(local, /PI_DENY_TOOLS='subagent_resume'/);
+      assert.doesNotMatch(local, /PI_DENY_TOOLS='[^']*claude/);
+      rmSync(join(project, "worker.md"));
+      const fallback = await launch("Global restriction");
+      const denied = fallback.match(/PI_DENY_TOOLS='([^']+)'/)![1].split(",");
+      assert.deepEqual(
+        denied.sort(),
+        ["claude", "subagent", "subagent_interrupt", "subagent_resume", "subagents_list"].sort(),
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
   }));
 
 test("all five specialist launches pass their exact medium model to Pi without mutating the parent", async () =>
@@ -458,6 +553,22 @@ test("all five specialist launches pass their exact medium model to Pi without m
         ),
       );
       assert.ok(!script.includes("exec claude"));
+      const allowlist = script.match(/--tools '([^']+)'/)?.[1].split(",");
+      const denied = script.match(/PI_DENY_TOOLS='([^']+)'/)?.[1].split(",") ?? [];
+      for (const tool of ["subagent", "subagent_interrupt", "subagents_list", "subagent_resume"]) {
+        assert.ok(!allowlist || allowlist.includes(tool), `${role} allows ${tool}`);
+        assert.ok(!denied.includes(tool), `${role} does not deny ${tool}`);
+      }
+      if (["scout", "reviewer"].includes(role)) {
+        assert.ok(!allowlist?.includes("write"));
+        assert.ok(!allowlist?.includes("edit"));
+      }
+      if (["worker", "scout"].includes(role)) assert.ok(denied.includes("claude"));
+      if (role === "visual-tester") {
+        assert.ok(allowlist?.includes("codex_computer_use"));
+        assert.ok(!allowlist?.includes("bash"));
+        assert.match(script, /PI_SUBAGENT_SKILLS='browser-routing'/);
+      }
       if (role === "worker") assert.match(script, /--tools '[^']*\btodo\b/);
       assert.match(script, /herdr-control\.ts.*subagent-done\.ts/);
       writeFileSync(r.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
@@ -479,20 +590,18 @@ test("same-session resume does not consume a previous managed child completion",
   fixture(async (h) => {
     h.configure({ fail: null });
     const first = await spawn(h);
-    writeFileSync(
+    appendFileSync(
       first.details.sessionFile,
-      JSON.stringify({ type: "session", id: "native-original", version: 3 }) +
-        "\n" +
-        JSON.stringify({
-          type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "FIRST_COMPLETION" }] },
-        }) +
-        "\n",
+      JSON.stringify({
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "FIRST_COMPLETION" }] },
+      }) + "\n",
     );
-    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(first.details.exitFile, JSON.stringify({ type: "done" }));
     await result(h);
     h.messages.splice(0);
-    await h.tools.get("subagent_resume").execute(
+    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    const resumed = await h.tools.get("subagent_resume").execute(
       "resume",
       {
         sessionPath: first.details.sessionFile,
@@ -518,8 +627,41 @@ test("same-session resume does not consume a previous managed child completion",
         }) +
         "\n",
     );
-    writeFileSync(first.details.sessionFile + ".exit", JSON.stringify({ type: "done" }));
+    writeFileSync(resumed.details.exitFile, JSON.stringify({ type: "done" }));
     const second = await result(h);
     assert.match(second.content, /SECOND_COMPLETION/);
     assert.equal(second.details.exitCode, 0);
+  }));
+
+test("a launch transport loss retains recovery evidence and never guesses child cleanup", async () =>
+  fixture(async (h: any) => {
+    h.configure({ fail: [], uncertainLaunch: true });
+    let receipt!: string;
+    await assert.rejects(spawn(h), (error: any) => {
+      assert.equal(error.name, "ManagedLaunchOutcomeUnknown");
+      assert.match(error.message, /do not retry or complete/);
+      receipt = error.recoveryReceipt;
+      return true;
+    });
+    const evidence = JSON.parse(readFileSync(receipt, "utf8"));
+    assert.equal(evidence.type, "subagent_launch_outcome_unknown");
+    assert.equal(evidence.cleanupOutcome, "retained");
+    assert.equal(evidence.parent.pane_id, "parent");
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch_branch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
+  }));
+
+test("an unwritable recovery receipt cannot turn an uncertain launch into a definite rejection", async () =>
+  fixture(async (h: any) => {
+    h.configure({ fail: [], uncertainLaunch: true, recoveryWriteFails: true });
+    await assert.rejects(spawn(h), (error: any) => {
+      assert.equal(error.name, "ManagedLaunchOutcomeUnknown");
+      assert.match(error.message, /closed without a matching response/);
+      assert.match(error.message, /Could not write recovery receipt/);
+      assert.match(error.message, /Preserve the original parent and launch script/);
+      assert.match(error.cause.message, /closed without a matching response/);
+      return true;
+    });
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.launch_branch").length, 1);
+    assert.equal(h.calls().filter((c: any) => c[0] === "terminal.job.close").length, 0);
   }));

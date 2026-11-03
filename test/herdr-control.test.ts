@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import control from "../pi-extension/subagents/herdr-control.ts";
@@ -20,7 +20,7 @@ const condition = {
   epoch: "",
   session: "native-session",
 };
-async function fixture(run: (h: any) => Promise<void>) {
+async function fixture(run: (h: any) => Promise<void>, nativeSession = "native-session") {
   const dir = mkdtempSync(join(tmpdir(), "pi-control-"));
   const socket = join(dir, "route.sock");
   const env = { ...process.env };
@@ -46,7 +46,11 @@ async function fixture(run: (h: any) => Promise<void>) {
                     id: frame.id,
                     result: {
                       type: "agent_control_registered",
-                      condition: { ...condition, epoch: frame.params.epoch },
+                      condition: {
+                        ...condition,
+                        session: nativeSession,
+                        epoch: frame.params.epoch,
+                      },
                     },
                   },
             ) + "\n",
@@ -67,8 +71,10 @@ async function fixture(run: (h: any) => Promise<void>) {
   let preparation: any;
   let aborted = 0;
   const notices: string[] = [];
+  const nativeFile = join(dir, "native.jsonl");
+  writeFileSync(nativeFile, JSON.stringify({ type: "session", id: nativeSession }) + "\n");
   const ctx = {
-    sessionManager: { getSessionId: () => "native-session" },
+    sessionManager: { getSessionId: () => nativeSession, getSessionFile: () => nativeFile },
     getUserRequest: () => current,
     getUserRequestPreparation: () => preparation,
     isIdle: () => !current,
@@ -106,7 +112,10 @@ async function fixture(run: (h: any) => Promise<void>) {
         JSON.stringify({
           id: params.request_id,
           method,
-          params: { condition: { ...condition, epoch: frames[0].params.epoch }, ...params },
+          params: {
+            condition: { ...condition, session: nativeSession, epoch: frames[0].params.epoch },
+            ...params,
+          },
         }) + "\n",
       ),
     setCurrent: (v: any) => {
@@ -119,7 +128,7 @@ async function fixture(run: (h: any) => Promise<void>) {
     shutdowns: () => shutdown,
     emit: async (name: string, event: any = {}) => {
       let result;
-      for (const fn of events.get(name) ?? []) result = await fn(event, ctx);
+      for (const fn of (events.get(name) ?? []).slice()) result = await fn(event, ctx);
       return result;
     },
   };
@@ -544,4 +553,214 @@ test("disconnect clears only local route admission authority so pending native w
     assert.equal(h.queued.length, 1);
     assert.equal(h.aborts(), 0);
     assert.equal(h.shutdowns(), 0);
+  }));
+
+test("same-native-session reload keeps enrollment and routes control only through a fresh registration", async () =>
+  fixture(async (h) => {
+    control(h.pi);
+    await h.emit("session_start");
+    await h.emit("session_shutdown", { reason: "reload" });
+    const freshEvents = new Map<string, any[]>();
+    const freshQueued: any[] = [];
+    const freshCtx = {
+      ...h.ctx,
+      sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "native-session" },
+    };
+    const fresh = {
+      on: (name: string, fn: any) => freshEvents.set(name, [...(freshEvents.get(name) ?? []), fn]),
+      enqueueMessage(message: any, options: any) {
+        freshQueued.push({ message, options });
+        return { status: "queued" as const };
+      },
+    };
+    h.pi.enqueueMessage = () => {
+      throw Error("stale SDK invoked");
+    };
+    for (const key of [
+      "getUserRequest",
+      "getUserRequestPreparation",
+      "isIdle",
+      "hasPendingMessages",
+      "abort",
+      "shutdown",
+    ])
+      h.ctx[key] = () => {
+        throw Error("stale context invoked: " + key);
+      };
+    control(fresh);
+    for (const fn of (freshEvents.get("session_start") ?? []).slice())
+      await fn({ reason: "reload" }, freshCtx);
+    assert.ok(
+      freshEvents.has("session_start"),
+      "fresh extension receives process-owned bridge handoff",
+    );
+    assert.equal(process.env.HERDR_CONTROL_CAPABILITY, undefined);
+    assert.equal(
+      h.frames.filter((f: any) => f.method === "agent.control.register").length,
+      1,
+      "consumed capability is never replayed",
+    );
+    h.send("agent.control.prompt", {
+      request_id: "after-reload",
+      text: "Fresh native guidance",
+      deadline_ms: 1000,
+    });
+    await waitFor(() => freshQueued.length === 1);
+    assert.equal(freshQueued[0].options.correlationId, "after-reload");
+    for (const fn of freshEvents.get("session_shutdown") ?? [])
+      await fn({ reason: "quit" }, freshCtx);
+  }));
+
+test("a different native session cannot claim or invalidate another host's quiescent connection", async () =>
+  fixture(async (h) => {
+    control(h.pi);
+    await h.emit("session_start");
+    await h.emit("session_shutdown", { reason: "reload" });
+    const events = new Map<string, any[]>();
+    const fresh = {
+      on: (name: string, fn: any) => events.set(name, [...(events.get(name) ?? []), fn]),
+      enqueueMessage: () => {
+        throw Error("foreign session received control");
+      },
+    };
+    control(fresh);
+    const foreign = {
+      ...h.ctx,
+      sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "foreign-native-session" },
+    };
+    for (const fn of (events.get("session_start") ?? []).slice())
+      await fn({ reason: "reload" }, foreign);
+    assert.equal(
+      h.peers[0].destroyed,
+      false,
+      "foreign identity cannot consume or retire the original host's bridge",
+    );
+    await h.emit("session_shutdown", { reason: "quit" });
+    await waitFor(() => h.peers[0].destroyed);
+    assert.equal(h.frames.filter((f: any) => f.method === "agent.control.register").length, 1);
+  }));
+
+test("reload with an uncorrelated pending external prompt closes rather than handing off uncertain control", async () =>
+  fixture(async (h) => {
+    control(h.pi);
+    await h.emit("session_start");
+    h.send("agent.control.prompt", {
+      request_id: "pending-at-reload",
+      text: "pending",
+      deadline_ms: 1000,
+    });
+    await waitFor(() => h.queued.length === 1);
+    await h.emit("session_shutdown", { reason: "reload" });
+    await waitFor(() => h.peers[0].destroyed);
+    const events: string[] = [];
+    control({
+      on: (name: string) => events.push(name),
+      enqueueMessage: () => ({ status: "queued" }),
+    });
+    assert.deepEqual(events, [], "an uncertain old operation has no process handoff owner");
+    assert.equal(process.env.HERDR_CONTROL_CAPABILITY, undefined);
+  }));
+
+test("independent native hosts reclaim their own reload connections in reverse registration order", async () =>
+  fixture(async (a) => {
+    control(a.pi);
+    await a.emit("session_start");
+    await a.emit("session_shutdown", { reason: "reload" });
+    await fixture(async (b) => {
+      control(b.pi);
+      await b.emit("session_start");
+      await b.emit("session_shutdown", { reason: "reload" });
+      const reload = async (h: any) => {
+        const events = new Map<string, any[]>();
+        const queued: any[] = [];
+        const sdk = {
+          on: (name: string, fn: any) => events.set(name, [...(events.get(name) ?? []), fn]),
+          enqueueMessage: (message: any, options: any) => {
+            queued.push({ message, options });
+            return { status: "queued" as const };
+          },
+        };
+        control(sdk);
+        const ctx = { ...h.ctx };
+        for (const fn of (events.get("session_start") ?? []).slice())
+          await fn({ reason: "reload" }, ctx);
+        return { events, queued, ctx };
+      };
+      const freshB = await reload(b),
+        freshA = await reload(a);
+      a.send("agent.control.prompt", {
+        request_id: "a-after-reload",
+        text: "A guidance",
+        deadline_ms: 1000,
+      });
+      b.send("agent.control.prompt", {
+        request_id: "b-after-reload",
+        text: "B guidance",
+        deadline_ms: 1000,
+      });
+      await waitFor(() => freshA.queued.length === 1 && freshB.queued.length === 1);
+      assert.equal(freshA.queued[0].options.correlationId, "a-after-reload");
+      assert.equal(freshB.queued[0].options.correlationId, "b-after-reload");
+      assert.equal(a.frames.filter((f: any) => f.method === "agent.control.register").length, 1);
+      assert.equal(b.frames.filter((f: any) => f.method === "agent.control.register").length, 1);
+      for (const fresh of [freshA, freshB])
+        for (const fn of (fresh.events.get("session_shutdown") ?? []).slice())
+          await fn({ reason: "quit" }, fresh.ctx);
+    }, "native-host-B");
+  }, "native-host-A"));
+
+test("a failed reload expires the quiescent process bridge after thirty seconds", async (t) =>
+  fixture(async (h) => {
+    control(h.pi);
+    await h.emit("session_start");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      await h.emit("session_shutdown", { reason: "reload" });
+      t.mock.timers.tick(30_001);
+    } finally {
+      t.mock.timers.reset();
+    }
+    await waitFor(() => h.peers[0].destroyed);
+    const registrations: string[] = [];
+    control({
+      on: (name: string) => registrations.push(name),
+      enqueueMessage: () => ({ status: "queued" }),
+    });
+    assert.deepEqual(registrations, [], "expired owner cannot be silently reattached");
+    assert.equal(process.env.HERDR_CONTROL_CAPABILITY, undefined);
+  }));
+
+test("a control request arriving during the reload gap retires uncertain ownership", async () =>
+  fixture(async (h) => {
+    control(h.pi);
+    await h.emit("session_start");
+    await h.emit("session_shutdown", { reason: "reload" });
+    h.send("agent.control.prompt", {
+      request_id: "during-reload",
+      text: "must not disappear silently",
+      deadline_ms: 1000,
+    });
+    await waitFor(() => h.peers[0].destroyed);
+    const registrations: string[] = [];
+    control({
+      on: (name: string) => registrations.push(name),
+      enqueueMessage: () => ({ status: "queued" }),
+    });
+    assert.deepEqual(registrations, []);
+    assert.deepEqual(h.queued, [], "quiesced owner invokes no stale native API");
+  }));
+
+test("reload without a concrete native file cannot hand off an enrolled controller", async () =>
+  fixture(async (h) => {
+    delete h.ctx.sessionManager.getSessionFile;
+    control(h.pi);
+    await h.emit("session_start");
+    await h.emit("session_shutdown", { reason: "reload" });
+    await waitFor(() => h.peers[0].destroyed);
+    const registrations: string[] = [];
+    control({
+      on: (name: string) => registrations.push(name),
+      enqueueMessage: () => ({ status: "queued" }),
+    });
+    assert.deepEqual(registrations, []);
   }));

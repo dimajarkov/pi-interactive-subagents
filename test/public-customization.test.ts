@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import net from "node:net";
 /** Public extension registration, discovery and native TUI component contracts.
  * The host API is a boundary fixture; these tests do not prove physical keys or pixels.
@@ -8,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initTheme } from "@mariozechner/pi-coding-agent";
+import { TUI_KEYBINDINGS } from "@mariozechner/pi-tui";
 import extension from "../pi-extension/subagents/index.ts";
 import childExtension from "../pi-extension/subagents/subagent-done.ts";
 
@@ -19,6 +21,7 @@ function host() {
   const shortcuts = new Map<string, any>();
   const messages: string[] = [];
   const api: any = {
+    events: new EventEmitter(),
     on(name: string, handler: any) {
       events.set(name, [...(events.get(name) ?? []), handler]);
     },
@@ -37,9 +40,12 @@ function host() {
     sendUserMessage(message: string) {
       messages.push(message);
     },
+    appendEntry() {},
     getAllTools() {
       return [...tools.values()];
     },
+    getActiveTools: () => [...tools.keys()],
+    setActiveTools() {},
   };
   return { api, tools, commands, renderers, events, shortcuts, messages };
 }
@@ -127,6 +133,32 @@ test("child delegation restrictions remove denied registered tools while preserv
     assert.ok(allowed.tools.has("subagent_resume"));
   }));
 
+test("each individual lifecycle denial removes only that tool from registration and the child widget", async () =>
+  isolated(async () => {
+    const lifecycle = ["subagent", "subagent_interrupt", "subagents_list", "subagent_resume"];
+    for (const denied of lifecycle) {
+      process.env.PI_DENY_TOOLS = denied;
+      const h = host();
+      extension(h.api);
+      childExtension(h.api);
+      for (const tool of lifecycle) assert.equal(h.tools.has(tool), tool !== denied);
+      let widget: any;
+      const ctx = {
+        sessionManager: { getSessionId: () => "policy-widget", getSessionFile: () => undefined },
+        ui: {
+          setWidget: (_name: string, component: any) => {
+            widget = component;
+          },
+        },
+      };
+      for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+      await h.shortcuts.get("ctrl+alt+j").handler(ctx);
+      const text = widget(null, theme).render(180).join("\n");
+      assert.match(text, new RegExp(`denied: ${denied}(?:\\s|$)`));
+      for (const tool of lifecycle.filter((t) => t !== denied)) assert.ok(text.includes(tool));
+    }
+  }));
+
 test("registered completion renderer expands full summary and native session reference", async () =>
   isolated(() => {
     initTheme("dark", false);
@@ -173,7 +205,7 @@ test("child widget toggle exposes effective tools and deny list; native activity
     };
     emit("session_start");
     assert.match(widget(null, theme).render(100).join("\n"), /SyntheticChild.*3 tools.*1 denied/);
-    await h.shortcuts.get("ctrl+j").handler(ctx);
+    await h.shortcuts.get("ctrl+alt+j").handler(ctx);
     const expanded = widget(null, theme).render(100).join("\n");
     assert.match(expanded, /caller_ping, read, subagent_done/);
     assert.match(expanded, /denied: subagent/);
@@ -217,7 +249,7 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
             request = JSON.parse(buffer.slice(0, end));
           buffer = buffer.slice(end + 1);
           let result: any;
-          if (request.method === "terminal.job.capabilities")
+          if (request.method === "terminal.job.branch_capabilities")
             result = {
               type: "managed_terminal_capabilities",
               job_ownership: true,
@@ -240,7 +272,7 @@ else if (a[1] === "read") console.log("synthetic ongoing task");
                 launch_id: "parent-launch",
               },
             };
-          if (request.method === "terminal.job.launch") {
+          if (request.method === "terminal.job.launch_branch") {
             managedSequence++;
             result = {
               type: "managed_terminal",
@@ -531,4 +563,152 @@ test("direct spawn, full-context iterate and all planning phases retain public w
     assert.match(plan, /name: "Review: Reviewer"/);
     assert.match(plan, /Always run workers sequentially/);
     assert.match(plan, /Build the requested feature$/);
+  }));
+
+test("a child's explicit denial removes a built-in tool from the model's active tools", async () =>
+  isolated(() => {
+    process.env.PI_DENY_TOOLS = "bash";
+    const h = host();
+    let active = ["read", "bash", "subagent_done"];
+    h.api.getActiveTools = () => [...active];
+    h.api.setActiveTools = (names: string[]) => {
+      active = names;
+    };
+    childExtension(h.api);
+    for (const fn of h.events.get("session_start") ?? [])
+      fn({}, { sessionManager: { getSessionId: () => "restricted" }, ui: { setWidget() {} } });
+    assert.deepEqual(active, ["read", "subagent_done"]);
+  }));
+
+test("missing native policy enforcement shuts down and blocks input even when event errors are swallowed", async () =>
+  isolated(() => {
+    process.env.PI_DENY_TOOLS = "bash";
+    const h = host();
+    delete h.api.getActiveTools;
+    delete h.api.setActiveTools;
+    let shutdowns = 0;
+    childExtension(h.api);
+    const ctx = {
+      shutdown: () => shutdowns++,
+      sessionManager: { getSessionId: () => "unsupported-policy" },
+      ui: { setWidget() {}, notify() {} },
+    };
+    for (const fn of h.events.get("session_start") ?? []) {
+      try {
+        fn({}, ctx);
+      } catch {
+        /* Native runner reports errors and continues other handlers. */
+      }
+    }
+    assert.equal(shutdowns, 1, "startup refusal requires an actual native shutdown");
+    const input = (h.events.get("input") ?? []).map((fn) => fn({ text: "must not execute" }, ctx));
+    assert.ok(
+      input.some((result) => result?.action === "handled"),
+      "a swallowed handler error cannot pass the initial task to a model",
+    );
+  }));
+
+test("child widget shortcut preserves native terminal editor bindings", () => {
+  const h = host();
+  childExtension(h.api);
+  const native = new Set<string>(
+    Object.values(TUI_KEYBINDINGS).flatMap((binding) => binding.defaultKeys),
+  );
+  assert.ok(h.shortcuts.size > 0, "widget retains a discoverable toggle");
+  for (const key of h.shortcuts.keys())
+    assert.ok(!native.has(key), `child widget overrides native ${key}`);
+});
+
+test("child widget excludes configured but inactive tools under a narrow allowlist", async () =>
+  isolated(async () => {
+    const h = host();
+    h.tools.set("read", { name: "read" });
+    h.tools.set("bash", { name: "bash" });
+    h.api.getActiveTools = () => ["read", "caller_ping", "subagent_done"];
+    childExtension(h.api);
+    let widget: any;
+    const ctx = {
+      ui: {
+        setWidget: (_: string, component: any) => {
+          widget = component;
+        },
+      },
+    };
+    for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+    await h.shortcuts.get("ctrl+alt+j").handler(ctx);
+    const text = widget(null, theme).render(180).join("\n");
+    assert.match(text, /3 available/);
+    assert.doesNotMatch(text, /bash/);
+  }));
+
+test("reload retains takeover and recognizes the first new input; explicit resume starts a fresh execution", async () =>
+  isolated(async () => {
+    process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+    process.env.PI_SUBAGENT_ID = "execution-original";
+    const entries: any[] = [];
+    let shutdowns = 0;
+    const ctx = {
+      sessionManager: {
+        getEntries: () => entries,
+        getSessionId: () => "native-control",
+        getSessionFile: () => undefined,
+      },
+      ui: { setWidget() {} },
+      shutdown: () => shutdowns++,
+    };
+    function registration() {
+      const h = host();
+      h.api.appendEntry = (customType: string, data: unknown) =>
+        entries.push({ type: "custom", customType, data });
+      childExtension(h.api);
+      const emit = (name: string, event: any = {}) => {
+        for (const fn of h.events.get(name) ?? []) fn(event, ctx);
+      };
+      emit("session_start");
+      return emit;
+    }
+    const first = registration();
+    first("input"); // Original launch message is not human takeover.
+    first("agent_start");
+    const afterReload = registration();
+    afterReload("input"); // First post-reload input must count as takeover.
+    afterReload("agent_start");
+    afterReload("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 0);
+    const anotherReload = registration();
+    anotherReload("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 0, "takeover survives reload without needing another human input");
+    process.env.PI_SUBAGENT_ID = "execution-resumed";
+    const resumed = registration();
+    resumed("input");
+    resumed("agent_start");
+    resumed("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+    assert.equal(shutdowns, 1, "a deliberate resume uses its new autonomous execution policy");
+  }));
+
+test("child widget does not intercept Herdr pane navigation and has a command toggle", async () =>
+  isolated(async () => {
+    const h = host();
+    childExtension(h.api);
+    // Declared Herdr navigation chords are owned by the enclosing multiplexer.
+    for (const key of ["alt+j", "alt+k", "alt+l", "alt+;", "tab"])
+      assert.ok(!h.shortcuts.has(key), `widget conflicts with Herdr ${key}`);
+    let widget: any;
+    const ctx = {
+      ui: {
+        setWidget: (_: string, component: any) => {
+          widget = component;
+        },
+      },
+    };
+    for (const fn of h.events.get("session_start") ?? []) fn({}, ctx);
+    const command = h.commands.get("subagent-tools");
+    assert.ok(
+      command,
+      "widget has a discoverable command independent of terminal modifier handling",
+    );
+    await command.handler("", ctx);
+    assert.match(widget(null, theme).render(160).join("\n"), /available/);
+    await command.handler("", ctx);
+    assert.match(widget(null, theme).render(160).join("\n"), /tools/);
   }));

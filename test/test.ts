@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
@@ -91,6 +92,7 @@ function createMockExtensionApi() {
     sentUserMessages,
     sentMessages,
     api: {
+      events: new EventEmitter(),
       on() {},
       registerTool(tool: any) {
         registeredTools.push(tool);
@@ -1161,9 +1163,9 @@ describe("subagent discovery", () => {
     );
   });
 
-  it("buildSubagentToolAllowlist returns null without an explicit tool restriction", () => {
+  it("buildSubagentToolAllowlist distinguishes absent and explicitly empty restrictions", () => {
     assert.equal(testApi.buildSubagentToolAllowlist(undefined), null);
-    assert.equal(testApi.buildSubagentToolAllowlist(""), null);
+    assert.equal(testApi.buildSubagentToolAllowlist(""), "caller_ping,subagent_done");
   });
 
   it("buildPiPromptArgs inserts separator for artifact-backed launches with skills", () => {
@@ -1509,7 +1511,7 @@ describe("tool registration", () => {
 
     const autoExitSchema = resumeTool.parameters.properties.autoExit;
     assert.equal(autoExitSchema.type, "boolean");
-    assert.match(autoExitSchema.description, /Defaults to true/);
+    assert.match(autoExitSchema.description, /Defaults to the original role policy/);
   });
 });
 
